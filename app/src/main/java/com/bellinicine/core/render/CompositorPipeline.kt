@@ -82,8 +82,11 @@ object CompositorPipeline {
         frame: Long = 0L,
         fps: Float = 30f,
         bufferWidth: Int = 0,
-        bufferHeight: Int = 0
+        bufferHeight: Int = 0,
+        depth: Int = 0
     ) {
+        if (depth > 5) return
+
         val consumedAsMatte = BooleanArray(evaluatedLayers.size)
         for (i in evaluatedLayers.indices) {
             val layer = evaluatedLayers[i].layer
@@ -108,7 +111,7 @@ object CompositorPipeline {
                 val matteEval = evaluatedLayers[i - 1]
                 renderWithTrackMatte(canvas, eval, matteEval, layer.trackMatteType, bufferW, bufferH, frame, fps)
             } else {
-                renderSingleEvaluatedLayer(canvas, eval, frame, fps)
+                renderSingleEvaluatedLayer(canvas, eval, frame, fps, depth)
             }
         }
     }
@@ -120,7 +123,8 @@ object CompositorPipeline {
         canvas: Canvas,
         eval: EvaluatedLayer,
         frame: Long = 0L,
-        fps: Float = 30f
+        fps: Float = 30f,
+        depth: Int = 0
     ) {
         val layer = eval.layer
         val alpha = (eval.transform.opacity / 100f).coerceIn(0f, 1f)
@@ -232,9 +236,9 @@ object CompositorPipeline {
         // 4. Render Layer Content (with Effects if present)
         val hasActiveEffects = layer.effects.any { it.enabled }
         if (hasActiveEffects) {
-            renderLayerWithEffects(canvas, layer, paint, alpha, frame, fps)
+            renderLayerWithEffects(canvas, layer, paint, alpha, frame, fps, depth)
         } else {
-            renderLayerDirect(canvas, layer, paint, alpha, frame, fps)
+            renderLayerDirect(canvas, layer, paint, alpha, frame, fps, depth)
         }
 
         canvas.restore()
@@ -246,7 +250,8 @@ object CompositorPipeline {
         paint: Paint,
         alpha: Float,
         frame: Long,
-        fps: Float
+        fps: Float,
+        depth: Int = 0
     ) {
         when (val data = layer.data) {
             is LayerData.Solid -> {
@@ -258,13 +263,65 @@ object CompositorPipeline {
 
             is LayerData.Text -> {
                 paint.color = data.fontColor.toInt()
-                paint.alpha = (alpha * 255).toInt()
                 paint.textSize = data.fontSize
                 paint.typeface = Typeface.create(data.fontFamily, Typeface.BOLD)
                 paint.letterSpacing = data.tracking / 100f
+                paint.textAlign = when (data.alignment.lowercase()) {
+                    "center" -> Paint.Align.CENTER
+                    "right" -> Paint.Align.RIGHT
+                    else -> Paint.Align.LEFT
+                }
                 val fontMetrics = paint.fontMetrics
-                val y = -fontMetrics.ascent
-                canvas.drawText(data.text, 0f, y, paint)
+                val lineHeight = fontMetrics.bottom - fontMetrics.top + data.leading
+                val lines = data.text.split("\n")
+
+                if (data.animatorEnabled && lines.size == 1) {
+                    val textStr = data.text
+                    val charCount = textStr.length
+                    val startIdx = (data.animatorStart / 100f * charCount).toInt().coerceIn(0, charCount)
+                    val endIdx = (data.animatorEnd / 100f * charCount).toInt().coerceIn(0, charCount)
+                    val baseX = when (paint.textAlign) {
+                        Paint.Align.CENTER -> 400f
+                        Paint.Align.RIGHT -> 800f
+                        else -> 0f
+                    }
+                    var curX = baseX
+                    val baseY = -fontMetrics.ascent
+
+                    for (ci in 0 until charCount) {
+                        val ch = textStr[ci].toString()
+                        val charW = paint.measureText(ch)
+                        val inRange = if (startIdx <= endIdx) (ci in startIdx until endIdx) else (ci >= startIdx || ci < endIdx)
+                        val charAlpha = if (inRange) {
+                            (alpha * (data.animatorOpacity / 100f).coerceIn(0f, 1f) * 255).toInt()
+                        } else {
+                            (alpha * 255).toInt()
+                        }
+                        val charOffsetY = if (inRange) data.animatorOffsetY else 0f
+                        val charScale = if (inRange) data.animatorScale else 1f
+
+                        canvas.save()
+                        canvas.translate(curX + charW / 2f, baseY + charOffsetY)
+                        canvas.scale(charScale, charScale)
+                        paint.alpha = charAlpha
+                        canvas.drawText(ch, -charW / 2f, 0f, paint)
+                        canvas.restore()
+
+                        curX += charW + data.tracking
+                    }
+                } else {
+                    val x = when (paint.textAlign) {
+                        Paint.Align.CENTER -> 400f
+                        Paint.Align.RIGHT -> 800f
+                        else -> 0f
+                    }
+                    var y = -fontMetrics.ascent
+                    paint.alpha = (alpha * 255).toInt()
+                    for (line in lines) {
+                        canvas.drawText(line, x, y, paint)
+                        y += lineHeight
+                    }
+                }
             }
 
             is LayerData.Shape -> {
@@ -277,9 +334,9 @@ object CompositorPipeline {
 
             is LayerData.Precomp -> {
                 val nestedComp = compositionProvider?.invoke(data.compositionId)
-                if (nestedComp != null) {
+                if (nestedComp != null && depth < 5) {
                     val nestedEvaluated = CompositionEvaluator.evaluateComposition(nestedComp, frame)
-                    renderEvaluatedLayers(canvas, nestedEvaluated, frame, nestedComp.frameRate)
+                    renderEvaluatedLayers(canvas, nestedEvaluated, frame, nestedComp.frameRate, nestedComp.width, nestedComp.height, depth + 1)
                 } else {
                     paint.style = Paint.Style.STROKE
                     paint.strokeWidth = 2f
@@ -297,6 +354,10 @@ object CompositorPipeline {
                 // Adjustment layer applies effects to underlying composite
             }
 
+            is LayerData.Audio -> {
+                // Audio layers are non-visual in video composite output
+            }
+
             is LayerData.NullObject -> {
                 // Null objects are invisible transform handles for parenting hierarchies
             }
@@ -311,7 +372,8 @@ object CompositorPipeline {
         paint: Paint,
         alpha: Float,
         frame: Long,
-        fps: Float
+        fps: Float,
+        depth: Int = 0
     ) {
         val (w, h) = when (val d = layer.data) {
             is LayerData.Solid -> Pair(d.width, d.height)
@@ -329,7 +391,7 @@ object CompositorPipeline {
             this.alpha = 255
         }
 
-        renderLayerDirect(offscreenCanvas, layer, directPaint, 1f, frame, fps)
+        renderLayerDirect(offscreenCanvas, layer, directPaint, 1f, frame, fps, depth)
 
         // Process applied effects in chain using EffectProcessor
         val processedBmp = EffectProcessor.applyEffects(layerBmp, layer.effects, frame, fps)
@@ -421,21 +483,21 @@ object CompositorPipeline {
         paint: Paint,
         alpha: Float
     ) {
-        val path = Path()
+        val basePath = Path()
         val w = shape.width
         val h = shape.height
 
         when (shape.shapeType.lowercase()) {
             "rectangle" -> {
                 if (shape.cornerRadius > 0f) {
-                    path.addRoundRect(RectF(0f, 0f, w, h), shape.cornerRadius, shape.cornerRadius, Path.Direction.CW)
+                    basePath.addRoundRect(RectF(0f, 0f, w, h), shape.cornerRadius, shape.cornerRadius, Path.Direction.CW)
                 } else {
-                    path.addRect(0f, 0f, w, h, Path.Direction.CW)
+                    basePath.addRect(0f, 0f, w, h, Path.Direction.CW)
                 }
             }
 
             "ellipse", "circle" -> {
-                path.addOval(RectF(0f, 0f, w, h), Path.Direction.CW)
+                basePath.addOval(RectF(0f, 0f, w, h), Path.Direction.CW)
             }
 
             "polygon" -> {
@@ -447,9 +509,9 @@ object CompositorPipeline {
                     val angle = (i * 2.0 * PI / sides) - (PI / 2.0)
                     val px = (cx + radius * cos(angle)).toFloat()
                     val py = (cy + radius * sin(angle)).toFloat()
-                    if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    if (i == 0) basePath.moveTo(px, py) else basePath.lineTo(px, py)
                 }
-                path.close()
+                basePath.close()
             }
 
             "star" -> {
@@ -464,29 +526,66 @@ object CompositorPipeline {
                     val angle = (i * PI / points * 2.0) - (PI / 2.0)
                     val px = (cx + radius * cos(angle)).toFloat()
                     val py = (cy + radius * sin(angle)).toFloat()
-                    if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    if (i == 0) basePath.moveTo(px, py) else basePath.lineTo(px, py)
                 }
-                path.close()
+                basePath.close()
             }
 
             else -> {
-                path.addRect(0f, 0f, w, h, Path.Direction.CW)
+                basePath.addRect(0f, 0f, w, h, Path.Direction.CW)
             }
         }
 
-        // Draw Fill
-        paint.style = Paint.Style.FILL
-        paint.color = shape.fillColor.toInt()
-        paint.alpha = (alpha * 255).toInt()
-        canvas.drawPath(path, paint)
+        // Apply Trim Paths if configured
+        val hasTrim = shape.trimPathsStart > 0f || shape.trimPathsEnd < 100f || shape.trimPathsOffset != 0f
+        val strokePath = if (hasTrim) {
+            val pm = android.graphics.PathMeasure(basePath, false)
+            val len = pm.length
+            if (len > 0f) {
+                val sNorm = (shape.trimPathsStart / 100f).coerceIn(0f, 1f)
+                val eNorm = (shape.trimPathsEnd / 100f).coerceIn(0f, 1f)
+                val offNorm = ((shape.trimPathsOffset % 360f) / 360f)
+                val sDist = ((sNorm + offNorm) % 1f * len).let { if (it < 0f) it + len else it }
+                val eDist = ((eNorm + offNorm) % 1f * len).let { if (it < 0f) it + len else it }
+                val trimmed = Path()
+                if (sDist <= eDist) {
+                    pm.getSegment(sDist, eDist, trimmed, true)
+                } else {
+                    pm.getSegment(sDist, len, trimmed, true)
+                    pm.getSegment(0f, eDist, trimmed, true)
+                }
+                trimmed
+            } else basePath
+        } else basePath
 
-        // Draw Stroke
-        if (shape.strokeWidth > 0f) {
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = shape.strokeWidth
-            paint.color = shape.strokeColor.toInt()
+        val copies = shape.repeaterCopies.coerceIn(1, 50)
+        for (c in 0 until copies) {
+            canvas.save()
+            if (c > 0) {
+                val offX = c * shape.repeaterOffsetX
+                val offY = c * shape.repeaterOffsetY
+                val sc = Math.pow(shape.repeaterScale.toDouble(), c.toDouble()).toFloat()
+                canvas.translate(offX, offY)
+                canvas.rotate(c * shape.repeaterRotation, w / 2f, h / 2f)
+                canvas.scale(sc, sc, w / 2f, h / 2f)
+            }
+
+            // Draw Fill (using basePath or trimmed path)
+            paint.style = Paint.Style.FILL
+            paint.color = shape.fillColor.toInt()
             paint.alpha = (alpha * 255).toInt()
-            canvas.drawPath(path, paint)
+            canvas.drawPath(if (hasTrim) strokePath else basePath, paint)
+
+            // Draw Stroke
+            if (shape.strokeWidth > 0f) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = shape.strokeWidth
+                paint.color = shape.strokeColor.toInt()
+                paint.alpha = (alpha * 255).toInt()
+                canvas.drawPath(strokePath, paint)
+            }
+
+            canvas.restore()
         }
     }
 

@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bellinicine.core.model.Composition
 import com.bellinicine.core.model.Layer
+import com.bellinicine.core.model.LayerData
 import com.bellinicine.ui.theme.AccentPrimary
 import com.bellinicine.ui.theme.BorderDark
 import com.bellinicine.ui.theme.KeyframeAmber
@@ -469,6 +470,24 @@ private fun LayerTrackBar(
                         }
                     }
             ) {
+                // Display audio waveform for Audio layers
+                if (layer.data is LayerData.Audio && layer.data.waveformPeaks.isNotEmpty()) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val peaks = layer.data.waveformPeaks
+                        val step = size.width / peaks.size.coerceAtLeast(1)
+                        val centerY = size.height / 2f
+                        peaks.forEachIndexed { idx, peak ->
+                            val h = (peak * centerY * 0.85f).coerceAtLeast(1f)
+                            drawLine(
+                                color = Color(0xFF00E676).copy(alpha = 0.85f),
+                                start = Offset(idx * step, centerY - h),
+                                end = Offset(idx * step, centerY + h),
+                                strokeWidth = 2.5f
+                            )
+                        }
+                    }
+                }
+
                 // Display diamond keyframe markers
                 val keyframedProps = listOf(
                     layer.transform.position,

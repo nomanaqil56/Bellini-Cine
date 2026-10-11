@@ -70,7 +70,9 @@ data class WorkspaceUiState(
     val showProjectDialog: Boolean = false,
     val projectList: List<ProjectSummary> = emptyList(),
     val hasAutosave: Boolean = false,
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    val isSnappingEnabled: Boolean = true,
+    val timelineZoom: Float = 1.0f
 )
 
 class WorkspaceViewModel : ViewModel() {
@@ -1091,6 +1093,300 @@ class WorkspaceViewModel : ViewModel() {
         }
         reevaluateCurrentFrame()
         scheduleAutosave()
+    }
+
+    // --- TIMELINE SNAPPING & ZOOM ---
+
+    fun toggleTimelineSnapping() {
+        _uiState.update { it.copy(isSnappingEnabled = !it.isSnappingEnabled) }
+    }
+
+    fun setTimelineZoom(zoom: Float) {
+        _uiState.update { it.copy(timelineZoom = zoom.coerceIn(0.2f, 5.0f)) }
+    }
+
+    fun snapFrame(targetFrame: Long): Long {
+        if (!_uiState.value.isSnappingEnabled) return targetFrame
+        val threshold = 3L
+        val comp = _uiState.value.activeComposition
+        val candidates = mutableListOf(0L, comp.durationFrames, _uiState.value.currentFrame)
+        comp.layers.forEach { l ->
+            candidates.add(l.inPointFrame)
+            candidates.add(l.outPointFrame)
+        }
+        val nearest = candidates.minByOrNull { kotlin.math.abs(it - targetFrame) } ?: targetFrame
+        return if (kotlin.math.abs(nearest - targetFrame) <= threshold) nearest else targetFrame
+    }
+
+    fun renameLayer(layerId: String, newName: String) {
+        pushHistoryState()
+        val updatedLayers = _uiState.value.activeComposition.layers.map {
+            if (it.id == layerId) it.copy(name = newName) else it
+        }
+        val updatedComp = _uiState.value.activeComposition.copy(layers = updatedLayers)
+        commitCompositionUpdate(updatedComp)
+    }
+
+    fun updateCompositionSettings(
+        name: String = _uiState.value.activeComposition.name,
+        width: Int = _uiState.value.activeComposition.width,
+        height: Int = _uiState.value.activeComposition.height,
+        fps: Float = _uiState.value.activeComposition.frameRate,
+        durationFrames: Long = _uiState.value.activeComposition.durationFrames,
+        backgroundColor: Long = _uiState.value.activeComposition.backgroundColor
+    ) {
+        pushHistoryState()
+        val updatedComp = _uiState.value.activeComposition.copy(
+            name = name,
+            width = width.coerceAtLeast(100),
+            height = height.coerceAtLeast(100),
+            frameRate = fps.coerceIn(1f, 120f),
+            durationFrames = durationFrames.coerceAtLeast(1L),
+            backgroundColor = backgroundColor
+        )
+        commitCompositionUpdate(updatedComp)
+    }
+
+    // --- KEYFRAME NAVIGATION ---
+
+    fun goToPreviousKeyframe() {
+        val selectedId = _uiState.value.selectedLayerId ?: return
+        val layer = _uiState.value.activeComposition.layers.firstOrNull { it.id == selectedId } ?: return
+        val current = _uiState.value.currentFrame
+        val allKfFrames = listOf(
+            layer.transform.position.keyframes.map { it.frame },
+            layer.transform.scale.keyframes.map { it.frame },
+            layer.transform.rotation.keyframes.map { it.frame },
+            layer.transform.opacity.keyframes.map { it.frame }
+        ).flatten().distinct().sorted()
+
+        val prev = allKfFrames.lastOrNull { it < current }
+        if (prev != null) {
+            seekToFrame(prev)
+        }
+    }
+
+    fun goToNextKeyframe() {
+        val selectedId = _uiState.value.selectedLayerId ?: return
+        val layer = _uiState.value.activeComposition.layers.firstOrNull { it.id == selectedId } ?: return
+        val current = _uiState.value.currentFrame
+        val allKfFrames = listOf(
+            layer.transform.position.keyframes.map { it.frame },
+            layer.transform.scale.keyframes.map { it.frame },
+            layer.transform.rotation.keyframes.map { it.frame },
+            layer.transform.opacity.keyframes.map { it.frame }
+        ).flatten().distinct().sorted()
+
+        val next = allKfFrames.firstOrNull { it > current }
+        if (next != null) {
+            seekToFrame(next)
+        }
+    }
+
+    // --- SHAPE OPERATORS & PROPERTIES ---
+
+    fun updateShapeProperties(
+        fillColor: Long? = null,
+        strokeColor: Long? = null,
+        strokeWidth: Float? = null,
+        cornerRadius: Float? = null
+    ) {
+        mutateSelectedLayer { layer ->
+            val data = layer.data
+            if (data is LayerData.Shape) {
+                val updatedData = data.copy(
+                    fillColor = fillColor ?: data.fillColor,
+                    strokeColor = strokeColor ?: data.strokeColor,
+                    strokeWidth = strokeWidth ?: data.strokeWidth,
+                    cornerRadius = cornerRadius ?: data.cornerRadius
+                )
+                layer.copy(data = updatedData)
+            } else layer
+        }
+    }
+
+    fun updateShapeTrimPaths(start: Float, end: Float, offset: Float) {
+        mutateSelectedLayer { layer ->
+            val data = layer.data
+            if (data is LayerData.Shape) {
+                layer.copy(data = data.copy(
+                    trimPathsStart = start.coerceIn(0f, 100f),
+                    trimPathsEnd = end.coerceIn(0f, 100f),
+                    trimPathsOffset = offset
+                ))
+            } else layer
+        }
+    }
+
+    fun updateShapeRepeater(copies: Int, offsetX: Float, offsetY: Float, scale: Float, rotation: Float) {
+        mutateSelectedLayer { layer ->
+            val data = layer.data
+            if (data is LayerData.Shape) {
+                layer.copy(data = data.copy(
+                    repeaterCopies = copies.coerceIn(1, 50),
+                    repeaterOffsetX = offsetX,
+                    repeaterOffsetY = offsetY,
+                    repeaterScale = scale,
+                    repeaterRotation = rotation
+                ))
+            } else layer
+        }
+    }
+
+    // --- TYPOGRAPHY & TEXT RANGE ANIMATOR ---
+
+    fun updateTextTypography(
+        fontFamily: String? = null,
+        fontSize: Float? = null,
+        fontColor: Long? = null,
+        tracking: Float? = null,
+        leading: Float? = null,
+        alignment: String? = null
+    ) {
+        mutateSelectedLayer { layer ->
+            val data = layer.data
+            if (data is LayerData.Text) {
+                val updated = data.copy(
+                    fontFamily = fontFamily ?: data.fontFamily,
+                    fontSize = fontSize ?: data.fontSize,
+                    fontColor = fontColor ?: data.fontColor,
+                    tracking = tracking ?: data.tracking,
+                    leading = leading ?: data.leading,
+                    alignment = alignment ?: data.alignment
+                )
+                layer.copy(data = updated)
+            } else layer
+        }
+    }
+
+    fun updateTextRangeAnimator(
+        enabled: Boolean,
+        start: Float,
+        end: Float,
+        opacity: Float,
+        offsetY: Float,
+        scale: Float
+    ) {
+        mutateSelectedLayer { layer ->
+            val data = layer.data
+            if (data is LayerData.Text) {
+                layer.copy(data = data.copy(
+                    animatorEnabled = enabled,
+                    animatorStart = start.coerceIn(0f, 100f),
+                    animatorEnd = end.coerceIn(0f, 100f),
+                    animatorOpacity = opacity.coerceIn(0f, 100f),
+                    animatorOffsetY = offsetY,
+                    animatorScale = scale
+                ))
+            } else layer
+        }
+    }
+
+    // --- AUDIO IMPORT & TIMELINE SUPPORT ---
+
+    fun addAudioLayer(name: String, mediaUri: String, durationSec: Float = 10f) {
+        pushHistoryState()
+        val comp = _uiState.value.activeComposition
+        val samplePeaks = listOf(0.1f, 0.4f, 0.8f, 0.6f, 0.9f, 0.3f, 0.5f, 0.7f, 0.2f, 0.6f, 0.85f, 0.4f, 0.2f, 0.7f, 0.5f, 0.3f)
+        val newLayer = Layer(
+            id = "layer-${UUID.randomUUID()}",
+            name = name,
+            type = LayerType.AUDIO,
+            data = LayerData.Audio(
+                audioUri = mediaUri,
+                durationSeconds = durationSec,
+                waveformPeaks = samplePeaks
+            ),
+            inPointFrame = 0L,
+            outPointFrame = (durationSec * comp.frameRate).toLong().coerceIn(1L, comp.durationFrames),
+            audioVolume = 1.0f
+        )
+        val updatedComp = comp.copy(layers = comp.layers + newLayer)
+        commitCompositionUpdate(updatedComp, newLayer.id)
+    }
+
+    fun updateAudioVolume(volume: Float) {
+        mutateSelectedLayer { layer ->
+            layer.copy(audioVolume = volume.coerceIn(0f, 2f))
+        }
+    }
+
+    fun toggleAudioMute(layerId: String) {
+        mutateSelectedLayer { layer ->
+            if (layer.id == layerId) {
+                val newVol = if (layer.audioVolume > 0f) 0f else 1f
+                layer.copy(audioVolume = newVol)
+            } else layer
+        }
+    }
+
+    // --- MASKS MANAGEMENT ---
+
+    fun addMaskToSelectedLayer(mode: com.bellinicine.core.model.MaskMode = com.bellinicine.core.model.MaskMode.ADD) {
+        mutateSelectedLayer { layer ->
+            val comp = _uiState.value.activeComposition
+            val w = comp.width.toFloat()
+            val h = comp.height.toFloat()
+            val defaultMask = com.bellinicine.core.model.Mask(
+                id = "mask-${UUID.randomUUID()}",
+                name = "Mask ${layer.masks.size + 1}",
+                mode = mode,
+                vertices = listOf(
+                    com.bellinicine.core.model.MaskVertex(com.bellinicine.core.model.Vec2(w * 0.25f, h * 0.25f)),
+                    com.bellinicine.core.model.MaskVertex(com.bellinicine.core.model.Vec2(w * 0.75f, h * 0.25f)),
+                    com.bellinicine.core.model.MaskVertex(com.bellinicine.core.model.Vec2(w * 0.75f, h * 0.75f)),
+                    com.bellinicine.core.model.MaskVertex(com.bellinicine.core.model.Vec2(w * 0.25f, h * 0.75f))
+                ),
+                isClosed = true
+            )
+            layer.copy(masks = layer.masks + defaultMask)
+        }
+    }
+
+    fun removeMaskFromSelectedLayer(maskId: String) {
+        mutateSelectedLayer { layer ->
+            layer.copy(masks = layer.masks.filter { it.id != maskId })
+        }
+    }
+
+    fun updateMaskMode(maskId: String, mode: com.bellinicine.core.model.MaskMode) {
+        mutateSelectedLayer { layer ->
+            layer.copy(masks = layer.masks.map {
+                if (it.id == maskId) it.copy(mode = mode) else it
+            })
+        }
+    }
+
+    fun toggleMaskInverted(maskId: String) {
+        mutateSelectedLayer { layer ->
+            layer.copy(masks = layer.masks.map {
+                if (it.id == maskId) it.copy(inverted = !it.inverted) else it
+            })
+        }
+    }
+
+    fun updateMaskOpacity(maskId: String, opacity: Float) {
+        mutateSelectedLayer { layer ->
+            layer.copy(masks = layer.masks.map {
+                if (it.id == maskId) it.copy(opacity = it.opacity.copy(defaultValue = opacity)) else it
+            })
+        }
+    }
+
+    fun updateMaskFeather(maskId: String, feather: Float) {
+        mutateSelectedLayer { layer ->
+            layer.copy(masks = layer.masks.map {
+                if (it.id == maskId) it.copy(feather = it.feather.copy(defaultValue = feather)) else it
+            })
+        }
+    }
+
+    fun updateMaskExpansion(maskId: String, expansion: Float) {
+        mutateSelectedLayer { layer ->
+            layer.copy(masks = layer.masks.map {
+                if (it.id == maskId) it.copy(expansion = it.expansion.copy(defaultValue = expansion)) else it
+            })
+        }
     }
 
     fun clearStatusMessage() {

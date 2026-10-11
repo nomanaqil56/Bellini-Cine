@@ -160,6 +160,26 @@ object CompositionEvaluator {
         return value
     }
 
+    fun evaluateVec2Property(prop: AnimatedProperty<com.bellinicine.core.model.Vec2>, frame: Long, seconds: Float = 0f): com.bellinicine.core.model.Vec2 {
+        var value = if (prop.hasKeyframes()) {
+            val kfs = prop.keyframes.sortedBy { it.frame }
+            val first = kfs.first()
+            val last = kfs.last()
+
+            if (frame <= first.frame) first.value
+            else if (frame >= last.frame) last.value
+            else {
+                val idx = kfs.indexOfLast { it.frame <= frame }
+                val k1 = kfs[idx]
+                val k2 = kfs[idx + 1]
+                BezierEvaluator.evaluateVec2(k1, k2, frame)
+            }
+        } else {
+            prop.defaultValue
+        }
+        return value
+    }
+
     fun createIdentityMatrix(): FloatArray {
         return floatArrayOf(
             1f, 0f, 0f, 0f,

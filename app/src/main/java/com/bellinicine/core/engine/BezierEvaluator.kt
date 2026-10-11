@@ -93,6 +93,27 @@ object BezierEvaluator {
     }
 
     /**
+     * Evaluates a 2D vector between two keyframes at frame [t].
+     */
+    fun evaluateVec2(
+        kf1: Keyframe<Vec2>,
+        kf2: Keyframe<Vec2>,
+        currentFrame: Long
+    ): Vec2 {
+        val x = evaluateFloat(
+            Keyframe(kf1.frame, kf1.value.x, kf1.interpolation, kf1.inTangent, kf1.outTangent),
+            Keyframe(kf2.frame, kf2.value.x, kf2.interpolation, kf2.inTangent, kf2.outTangent),
+            currentFrame
+        )
+        val y = evaluateFloat(
+            Keyframe(kf1.frame, kf1.value.y, kf1.interpolation, kf1.inTangent, kf1.outTangent),
+            Keyframe(kf2.frame, kf2.value.y, kf2.interpolation, kf2.inTangent, kf2.outTangent),
+            currentFrame
+        )
+        return Vec2(x, y)
+    }
+
+    /**
      * 1D cubic Bezier calculation: B(t) = (1-t)^3*P0 + 3(1-t)^2*t*P1 + 3(1-t)*t^2*P2 + t^3*P3
      */
     fun cubicBezier1D(p0: Float, p1: Float, p2: Float, p3: Float, t: Float): Float {

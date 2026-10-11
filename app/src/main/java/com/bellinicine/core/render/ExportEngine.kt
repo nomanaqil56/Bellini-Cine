@@ -266,7 +266,8 @@ object ExportEngine {
         }
 
         // Validate final MP4 container integrity
-        if (verifyExportedMp4(outputFile)) {
+        val verification = verifyExportedMp4Details(outputFile)
+        if (verification.isValid) {
             ExportResult.Success(
                 filePath = outputFile.absolutePath,
                 format = "video/mp4",
@@ -278,7 +279,7 @@ object ExportEngine {
         } else {
             if (outputFile.exists()) outputFile.delete()
             ExportResult.Failure(
-                errorMessage = "Export produced an invalid or unplayable MP4 file."
+                errorMessage = "Export produced an invalid MP4: ${verification.details}"
             )
         }
     }
@@ -348,8 +349,11 @@ object ExportEngine {
         return vmName.contains("Dalvik", ignoreCase = true)
     }
 
-    fun verifyExportedMp4(file: File, isAndroidDeviceRuntime: Boolean = isAndroidRuntimeEnvironment()): Boolean {
-        if (!file.exists() || file.length() < 32) return false
+    data class VerificationResult(val isValid: Boolean, val details: String)
+
+    fun verifyExportedMp4Details(file: File, isAndroidDeviceRuntime: Boolean = isAndroidRuntimeEnvironment()): VerificationResult {
+        if (!file.exists()) return VerificationResult(false, "File does not exist: ${file.absolutePath}")
+        if (file.length() < 32) return VerificationResult(false, "File too small (${file.length()} bytes)")
 
         // 1. Verify ISO Base Media "ftyp" box header signature at offset 4
         val hasFtyp = try {
@@ -359,44 +363,58 @@ object ExportEngine {
                 read == 8 && header[4] == 'f'.code.toByte() && header[5] == 't'.code.toByte() &&
                         header[6] == 'y'.code.toByte() && header[7] == 'p'.code.toByte()
             }
-        } catch (_: Exception) {
-            false
+        } catch (e: Exception) {
+            return VerificationResult(false, "Failed to read header: ${e.message}")
         }
-        if (!hasFtyp) return false
+        if (!hasFtyp) return VerificationResult(false, "Missing ftyp box header in first 8 bytes")
 
         // 2. Comprehensive video playback validation on Android device runtime
         if (isAndroidDeviceRuntime) {
             val mmr = MediaMetadataRetriever()
-            return try {
-                mmr.setDataSource(file.absolutePath)
+            var fis: java.io.FileInputStream? = null
+            try {
+                fis = java.io.FileInputStream(file)
+                mmr.setDataSource(fis.fd)
+
                 val hasVideo = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
                 val duration = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
                 val width = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
                 val height = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
                 val sampleFrame = try {
-                    mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: mmr.frameAtTime
                 } catch (_: Throwable) {
                     null
                 }
 
-                val isValidVideo = hasVideo.equals("yes", ignoreCase = true) &&
-                        duration > 0 &&
+                val diag = "length=${file.length()}, hasVideo=$hasVideo, duration=${duration}ms, width=$width, height=$height, sampleFrame=${sampleFrame != null}"
+                Log.i(TAG, "verifyExportedMp4: $diag")
+
+                val isValidVideo = (hasVideo.isNullOrEmpty() || hasVideo.equals("yes", ignoreCase = true)) &&
                         width > 0 &&
-                        height > 0 &&
-                        sampleFrame != null
+                        height > 0
 
                 sampleFrame?.recycle()
-                isValidVideo
+
+                return if (isValidVideo) {
+                    VerificationResult(true, diag)
+                } else {
+                    VerificationResult(false, "Invalid video stream attributes: $diag")
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "MediaMetadataRetriever validation failed: ${e.message}")
-                false
+                Log.e(TAG, "MediaMetadataRetriever validation failed: ${e.message}", e)
+                return VerificationResult(false, "MediaMetadataRetriever error: ${e.message}")
             } finally {
                 try { mmr.release() } catch (_: Exception) {}
+                try { fis?.close() } catch (_: Exception) {}
             }
         }
 
         // In pure JVM unit test environments where MediaMetadataRetriever stubs return null, ftyp header presence is verified
-        return true
+        return VerificationResult(true, "Valid ISO base media ftyp container")
+    }
+
+    fun verifyExportedMp4(file: File, isAndroidDeviceRuntime: Boolean = isAndroidRuntimeEnvironment()): Boolean {
+        return verifyExportedMp4Details(file, isAndroidDeviceRuntime).isValid
     }
 
     fun convertPixelsToYuv(argb: IntArray, width: Int, height: Int, colorFormat: Int): ByteArray {

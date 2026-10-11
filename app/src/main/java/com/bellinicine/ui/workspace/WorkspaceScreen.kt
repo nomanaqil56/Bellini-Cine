@@ -374,7 +374,19 @@ fun WorkspaceScreen(
                             onToggleEffect = { viewModel.toggleEffectEnabled(it) },
                             onUpdateEffectSlider = { id, name, v -> viewModel.updateEffectSlider(id, name, v) },
                             onUpdateEffectCheckbox = { id, name, v -> viewModel.updateEffectCheckbox(id, name, v) },
-                            onReorderEffect = { idx, up -> viewModel.reorderEffect(idx, up) }
+                            onReorderEffect = { idx, up -> viewModel.reorderEffect(idx, up) },
+                            onUpdateShapeProperties = { f, s, sw, cr -> viewModel.updateShapeProperties(f, s, sw, cr) },
+                            onUpdateShapeTrimPaths = { st, en, off -> viewModel.updateShapeTrimPaths(st, en, off) },
+                            onUpdateShapeRepeater = { c, ox, oy, sc, rot -> viewModel.updateShapeRepeater(c, ox, oy, sc, rot) },
+                            onUpdateTextTypography = { f, s, c, t, l, a -> viewModel.updateTextTypography(f, s, c, t, l, a) },
+                            onUpdateTextRangeAnimator = { en, st, end, op, oy, sc -> viewModel.updateTextRangeAnimator(en, st, end, op, oy, sc) },
+                            onUpdateAudioVolume = { viewModel.updateAudioVolume(it) },
+                            onAddMask = { viewModel.addMaskToSelectedLayer() },
+                            onRemoveMask = { viewModel.removeMaskFromSelectedLayer(it) },
+                            onUpdateMaskMode = { id, m -> viewModel.updateMaskMode(id, m) },
+                            onToggleMaskInverted = { viewModel.toggleMaskInverted(it) },
+                            onUpdateMaskFeather = { id, f -> viewModel.updateMaskFeather(id, f) },
+                            onUpdateMaskExpansion = { id, e -> viewModel.updateMaskExpansion(id, e) }
                         )
                     }
                     WorkspaceTab.PROJECT_ASSETS -> {

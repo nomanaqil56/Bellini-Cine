@@ -51,6 +51,8 @@ import com.bellinicine.core.model.BlendMode
 import com.bellinicine.core.model.EffectCategory
 import com.bellinicine.core.model.EffectParameter
 import com.bellinicine.core.model.Layer
+import com.bellinicine.core.model.LayerData
+import com.bellinicine.core.model.MaskMode
 import com.bellinicine.core.model.TrackMatteType
 import com.bellinicine.core.render.EffectRegistry
 import com.bellinicine.ui.theme.AccentPrimary
@@ -77,6 +79,18 @@ fun PropertyInspector(
     onUpdateEffectSlider: (String, String, Float) -> Unit = { _, _, _ -> },
     onUpdateEffectCheckbox: (String, String, Boolean) -> Unit = { _, _, _ -> },
     onReorderEffect: (Int, Boolean) -> Unit = { _, _ -> },
+    onUpdateShapeProperties: (Long?, Long?, Float?, Float?) -> Unit = { _, _, _, _ -> },
+    onUpdateShapeTrimPaths: (Float, Float, Float) -> Unit = { _, _, _ -> },
+    onUpdateShapeRepeater: (Int, Float, Float, Float, Float) -> Unit = { _, _, _, _, _ -> },
+    onUpdateTextTypography: (String?, Float?, Long?, Float?, Float?, String?) -> Unit = { _, _, _, _, _, _ -> },
+    onUpdateTextRangeAnimator: (Boolean, Float, Float, Float, Float, Float) -> Unit = { _, _, _, _, _, _ -> },
+    onUpdateAudioVolume: (Float) -> Unit = {},
+    onAddMask: () -> Unit = {},
+    onRemoveMask: (String) -> Unit = {},
+    onUpdateMaskMode: (String, MaskMode) -> Unit = { _, _ -> },
+    onToggleMaskInverted: (String) -> Unit = {},
+    onUpdateMaskFeather: (String, Float) -> Unit = { _, _ -> },
+    onUpdateMaskExpansion: (String, Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     if (selectedLayer == null) {
@@ -224,6 +238,325 @@ fun PropertyInspector(
                 valueRange = 0f..300f,
                 colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
             )
+        }
+
+        // Section: Shape Layer Properties & Operators
+        if (selectedLayer.data is LayerData.Shape) {
+            val shape = selectedLayer.data
+            Text(
+                text = "SHAPE OPERATORS & GEOMETRY",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextMuted,
+                modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 4.dp)
+            )
+
+            // Stroke Width
+            PropertyRow(
+                name = "Stroke Width",
+                valueText = "${shape.strokeWidth.toInt()}px",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.strokeWidth,
+                    onValueChange = { onUpdateShapeProperties(null, null, it, null) },
+                    valueRange = 0f..50f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+
+            // Corner Radius
+            PropertyRow(
+                name = "Corner Radius",
+                valueText = "${shape.cornerRadius.toInt()}px",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.cornerRadius,
+                    onValueChange = { onUpdateShapeProperties(null, null, null, it) },
+                    valueRange = 0f..100f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+
+            // Trim Paths Operator
+            Text(
+                text = "Trim Paths Operator",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = AccentPrimary,
+                modifier = Modifier.padding(start = 12.dp, top = 6.dp)
+            )
+            PropertyRow(
+                name = "Trim Start",
+                valueText = "${shape.trimPathsStart.toInt()}%",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.trimPathsStart,
+                    onValueChange = { onUpdateShapeTrimPaths(it, shape.trimPathsEnd, shape.trimPathsOffset) },
+                    valueRange = 0f..100f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+            PropertyRow(
+                name = "Trim End",
+                valueText = "${shape.trimPathsEnd.toInt()}%",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.trimPathsEnd,
+                    onValueChange = { onUpdateShapeTrimPaths(shape.trimPathsStart, it, shape.trimPathsOffset) },
+                    valueRange = 0f..100f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+            PropertyRow(
+                name = "Trim Offset",
+                valueText = "${shape.trimPathsOffset.toInt()}°",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.trimPathsOffset,
+                    onValueChange = { onUpdateShapeTrimPaths(shape.trimPathsStart, shape.trimPathsEnd, it) },
+                    valueRange = -360f..360f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+
+            // Repeater Operator
+            Text(
+                text = "Repeater Operator",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = AccentPrimary,
+                modifier = Modifier.padding(start = 12.dp, top = 6.dp)
+            )
+            PropertyRow(
+                name = "Copies",
+                valueText = "${shape.repeaterCopies}",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.repeaterCopies.toFloat(),
+                    onValueChange = { onUpdateShapeRepeater(it.toInt(), shape.repeaterOffsetX, shape.repeaterOffsetY, shape.repeaterScale, shape.repeaterRotation) },
+                    valueRange = 1f..15f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+            PropertyRow(
+                name = "Offset X",
+                valueText = "${shape.repeaterOffsetX.toInt()}px",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = shape.repeaterOffsetX,
+                    onValueChange = { onUpdateShapeRepeater(shape.repeaterCopies, it, shape.repeaterOffsetY, shape.repeaterScale, shape.repeaterRotation) },
+                    valueRange = -200f..200f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+        }
+
+        // Section: Typography & Text Animator
+        if (selectedLayer.data is LayerData.Text) {
+            val textData = selectedLayer.data
+            Text(
+                text = "TYPOGRAPHY & TEXT ANIMATOR",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextMuted,
+                modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 4.dp)
+            )
+
+            PropertyRow(
+                name = "Font Size",
+                valueText = "${textData.fontSize.toInt()}sp",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = textData.fontSize,
+                    onValueChange = { onUpdateTextTypography(null, it, null, null, null, null) },
+                    valueRange = 12f..140f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+
+            PropertyRow(
+                name = "Tracking",
+                valueText = "${textData.tracking.toInt()}",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = textData.tracking,
+                    onValueChange = { onUpdateTextTypography(null, null, null, it, null, null) },
+                    valueRange = -20f..80f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Range Animator", fontSize = 11.sp, color = AccentPrimary, fontWeight = FontWeight.Bold)
+                Checkbox(
+                    checked = textData.animatorEnabled,
+                    onCheckedChange = { onUpdateTextRangeAnimator(it, textData.animatorStart, textData.animatorEnd, textData.animatorOpacity, textData.animatorOffsetY, textData.animatorScale) },
+                    colors = CheckboxDefaults.colors(checkedColor = AccentPrimary)
+                )
+            }
+
+            if (textData.animatorEnabled) {
+                PropertyRow(
+                    name = "Animator Start",
+                    valueText = "${textData.animatorStart.toInt()}%",
+                    isKeyframed = false,
+                    onToggleStopwatch = {}
+                ) {
+                    Slider(
+                        value = textData.animatorStart,
+                        onValueChange = { onUpdateTextRangeAnimator(true, it, textData.animatorEnd, textData.animatorOpacity, textData.animatorOffsetY, textData.animatorScale) },
+                        valueRange = 0f..100f,
+                        colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                    )
+                }
+
+                PropertyRow(
+                    name = "Animator End",
+                    valueText = "${textData.animatorEnd.toInt()}%",
+                    isKeyframed = false,
+                    onToggleStopwatch = {}
+                ) {
+                    Slider(
+                        value = textData.animatorEnd,
+                        onValueChange = { onUpdateTextRangeAnimator(true, textData.animatorStart, it, textData.animatorOpacity, textData.animatorOffsetY, textData.animatorScale) },
+                        valueRange = 0f..100f,
+                        colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                    )
+                }
+
+                PropertyRow(
+                    name = "Anim Opacity",
+                    valueText = "${textData.animatorOpacity.toInt()}%",
+                    isKeyframed = false,
+                    onToggleStopwatch = {}
+                ) {
+                    Slider(
+                        value = textData.animatorOpacity,
+                        onValueChange = { onUpdateTextRangeAnimator(true, textData.animatorStart, textData.animatorEnd, it, textData.animatorOffsetY, textData.animatorScale) },
+                        valueRange = 0f..100f,
+                        colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                    )
+                }
+            }
+        }
+
+        // Section: Audio Controls
+        if (selectedLayer.data is LayerData.Audio || selectedLayer.type == com.bellinicine.core.model.LayerType.AUDIO) {
+            Text(
+                text = "AUDIO CONTROLS",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextMuted,
+                modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 4.dp)
+            )
+
+            PropertyRow(
+                name = "Volume",
+                valueText = "${(selectedLayer.audioVolume * 100).toInt()}%",
+                isKeyframed = false,
+                onToggleStopwatch = {}
+            ) {
+                Slider(
+                    value = selectedLayer.audioVolume,
+                    onValueChange = { onUpdateAudioVolume(it) },
+                    valueRange = 0f..2f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+        }
+
+        // Section: Layer Masks
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 4.dp)
+        ) {
+            Text(
+                text = "MASKS (${selectedLayer.masks.size})",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextMuted
+            )
+            FilledTonalButton(
+                onClick = onAddMask,
+                shape = RoundedCornerShape(4.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(containerColor = AccentPrimary),
+                modifier = Modifier.height(28.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
+                Text("Add Mask", fontSize = 10.sp, color = Color.White, modifier = Modifier.padding(start = 2.dp))
+            }
+        }
+
+        selectedLayer.masks.forEach { mask ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = PanelHeader),
+                shape = RoundedCornerShape(4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(mask.name, fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(mask.mode.name, fontSize = 10.sp, color = AccentPrimary, modifier = Modifier.padding(end = 8.dp))
+                        IconButton(onClick = { onRemoveMask(mask.id) }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Inverted", fontSize = 11.sp, color = TextSecondary)
+                        Checkbox(
+                            checked = mask.inverted,
+                            onCheckedChange = { onToggleMaskInverted(mask.id) },
+                            colors = CheckboxDefaults.colors(checkedColor = AccentPrimary)
+                        )
+                    }
+
+                    PropertyRow(
+                        name = "Feather",
+                        valueText = "${mask.feather.defaultValue.toInt()}px",
+                        isKeyframed = false,
+                        onToggleStopwatch = {}
+                    ) {
+                        Slider(
+                            value = mask.feather.defaultValue,
+                            onValueChange = { onUpdateMaskFeather(mask.id, it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                        )
+                    }
+                }
+            }
         }
 
         // Section: Visual Effects & Filters
