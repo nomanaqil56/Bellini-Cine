@@ -21,8 +21,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Pause
@@ -77,6 +82,13 @@ fun TimelineView(
     onToggleLock: (String) -> Unit,
     onAddSolid: () -> Unit,
     onAddText: () -> Unit,
+    onSplitLayer: (String) -> Unit = {},
+    onDuplicateLayer: (String) -> Unit = {},
+    onDeleteLayer: (String) -> Unit = {},
+    onReorderLayer: (String, Boolean) -> Unit = { _, _ -> },
+    onTrimInPoint: (String, Long) -> Unit = { _, _ -> },
+    onTrimOutPoint: (String, Long) -> Unit = { _, _ -> },
+    onMoveLayerTime: (String, Long) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val pixelsPerFrame = 6f
@@ -88,15 +100,20 @@ fun TimelineView(
             .fillMaxSize()
             .background(PanelDark)
     ) {
-        // 1. Transport Bar & Timecode Header
+        // 1. Transport Bar & Timecode Header with Editing Actions
         TransportBar(
             currentFrame = currentFrame,
             fps = composition.frameRate,
             isPlaying = isPlaying,
+            selectedLayerId = selectedLayerId,
             onTogglePlay = onTogglePlay,
             onStepFrame = onStepFrame,
             onAddSolid = onAddSolid,
-            onAddText = onAddText
+            onAddText = onAddText,
+            onSplitLayer = { selectedLayerId?.let { onSplitLayer(it) } },
+            onDuplicateLayer = { selectedLayerId?.let { onDuplicateLayer(it) } },
+            onDeleteLayer = { selectedLayerId?.let { onDeleteLayer(it) } },
+            onReorderLayer = { moveUp -> selectedLayerId?.let { onReorderLayer(it, moveUp) } }
         )
 
         // 2. Multi-track Timeline Area
@@ -146,6 +163,9 @@ fun TimelineView(
                                 isSelected = layer.id == selectedLayerId,
                                 pixelsPerFrame = pixelsPerFrame,
                                 onSelect = { onSelectLayer(layer.id) },
+                                onTrimInPoint = onTrimInPoint,
+                                onTrimOutPoint = onTrimOutPoint,
+                                onMoveLayerTime = onMoveLayerTime,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(36.dp)
@@ -170,10 +190,15 @@ private fun TransportBar(
     currentFrame: Long,
     fps: Float,
     isPlaying: Boolean,
+    selectedLayerId: String?,
     onTogglePlay: () -> Unit,
     onStepFrame: (Long) -> Unit,
     onAddSolid: () -> Unit,
-    onAddText: () -> Unit
+    onAddText: () -> Unit,
+    onSplitLayer: () -> Unit,
+    onDuplicateLayer: () -> Unit,
+    onDeleteLayer: () -> Unit,
+    onReorderLayer: (Boolean) -> Unit
 ) {
     val totalSeconds = (currentFrame / fps).toInt()
     val frameWithinSecond = (currentFrame % fps).toInt()
@@ -227,13 +252,30 @@ private fun TransportBar(
                 }
             }
 
-            // Quick Layer Creation Buttons
-            Row {
-                IconButton(onClick = onAddSolid, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Wallpaper, contentDescription = "Add Solid", tint = TextSecondary)
+            // Layer Editing Actions (Split, Duplicate, Delete, Reorder, Add)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (selectedLayerId != null) {
+                    IconButton(onClick = onSplitLayer, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.ContentCut, contentDescription = "Split at playhead", tint = AccentPrimary, modifier = Modifier.size(16.dp))
+                    }
+                    IconButton(onClick = onDuplicateLayer, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate layer", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                    }
+                    IconButton(onClick = { onReorderLayer(true) }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move layer up", tint = TextSecondary, modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(onClick = { onReorderLayer(false) }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move layer down", tint = TextSecondary, modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(onClick = onDeleteLayer, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete layer", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                    }
                 }
-                IconButton(onClick = onAddText, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.TextFields, contentDescription = "Add Text", tint = TextSecondary)
+                IconButton(onClick = onAddSolid, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Wallpaper, contentDescription = "Add Solid", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                }
+                IconButton(onClick = onAddText, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.TextFields, contentDescription = "Add Text", tint = TextSecondary, modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -366,19 +408,21 @@ private fun LayerTrackBar(
     isSelected: Boolean,
     pixelsPerFrame: Float,
     onSelect: () -> Unit,
+    onTrimInPoint: (String, Long) -> Unit,
+    onTrimOutPoint: (String, Long) -> Unit,
+    onMoveLayerTime: (String, Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier
             .background(if (isSelected) BorderDark.copy(alpha = 0.5f) else Color.Transparent)
-            .clickable { onSelect() }
             .padding(vertical = 4.dp)
     ) {
         val startX = (layer.inPointFrame * pixelsPerFrame).dp
-        val barWidth = ((layer.outPointFrame - layer.inPointFrame) * pixelsPerFrame).dp
+        val barWidth = ((layer.outPointFrame - layer.inPointFrame) * pixelsPerFrame).dp.coerceAtLeast(28.dp)
 
-        // Layer Timeline Bar
-        Box(
+        // Layer Timeline Bar with left & right trim handles and center mover
+        Row(
             modifier = Modifier
                 .padding(start = startX)
                 .width(barWidth)
@@ -386,32 +430,90 @@ private fun LayerTrackBar(
                 .background(
                     color = if (isSelected) AccentPrimary else Color(0xFF333344),
                     shape = RoundedCornerShape(4.dp)
-                )
+                ),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Display diamond keyframe markers
-            val keyframedProps = listOf(
-                layer.transform.position,
-                layer.transform.scale,
-                layer.transform.rotation,
-                layer.transform.opacity
-            ).filter { it.hasKeyframes() }
-
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                keyframedProps.forEach { prop ->
-                    prop.keyframes.forEach { kf ->
-                        val kfX = (kf.frame - layer.inPointFrame) * pixelsPerFrame
-                        if (kfX >= 0 && kfX <= size.width) {
-                            val path = Path().apply {
-                                moveTo(kfX, size.height / 2f - 5f)
-                                lineTo(kfX + 5f, size.height / 2f)
-                                lineTo(kfX, size.height / 2f + 5f)
-                                lineTo(kfX - 5f, size.height / 2f)
-                                close()
+            // Left Trim In-Point Handle
+            Box(
+                modifier = Modifier
+                    .width(12.dp)
+                    .fillMaxSize()
+                    .background(if (isSelected) Color.White.copy(alpha = 0.35f) else Color.Transparent)
+                    .pointerInput(layer.id) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            val dFrames = (dragAmount.x / pixelsPerFrame).toLong()
+                            if (dFrames != 0L) {
+                                onTrimInPoint(layer.id, layer.inPointFrame + dFrames)
                             }
-                            drawPath(path, color = KeyframeAmber)
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Box(modifier = Modifier.width(2.dp).height(12.dp).background(Color.White))
+            }
+
+            // Center Movable Track Body
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize()
+                    .clickable { onSelect() }
+                    .pointerInput(layer.id) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            val dFrames = (dragAmount.x / pixelsPerFrame).toLong()
+                            if (dFrames != 0L) {
+                                onMoveLayerTime(layer.id, dFrames)
+                            }
+                        }
+                    }
+            ) {
+                // Display diamond keyframe markers
+                val keyframedProps = listOf(
+                    layer.transform.position,
+                    layer.transform.scale,
+                    layer.transform.rotation,
+                    layer.transform.opacity
+                ).filter { it.hasKeyframes() }
+
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    keyframedProps.forEach { prop ->
+                        prop.keyframes.forEach { kf ->
+                            val kfX = (kf.frame - layer.inPointFrame) * pixelsPerFrame - 12.dp.toPx()
+                            if (kfX >= 0 && kfX <= size.width) {
+                                val path = Path().apply {
+                                    moveTo(kfX, size.height / 2f - 5f)
+                                    lineTo(kfX + 5f, size.height / 2f)
+                                    lineTo(kfX, size.height / 2f + 5f)
+                                    lineTo(kfX - 5f, size.height / 2f)
+                                    close()
+                                }
+                                drawPath(path, color = KeyframeAmber)
+                            }
                         }
                     }
                 }
+            }
+
+            // Right Trim Out-Point Handle
+            Box(
+                modifier = Modifier
+                    .width(12.dp)
+                    .fillMaxSize()
+                    .background(if (isSelected) Color.White.copy(alpha = 0.35f) else Color.Transparent)
+                    .pointerInput(layer.id) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            val dFrames = (dragAmount.x / pixelsPerFrame).toLong()
+                            if (dFrames != 0L) {
+                                onTrimOutPoint(layer.id, layer.outPointFrame + dFrames)
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Box(modifier = Modifier.width(2.dp).height(12.dp).background(Color.White))
             }
         }
     }

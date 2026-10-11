@@ -17,6 +17,10 @@ import com.bellinicine.core.model.LayerData
 import com.bellinicine.core.model.LayerType
 import com.bellinicine.core.model.Project
 import com.bellinicine.core.model.TrackMatteType
+import com.bellinicine.core.render.CompositorPipeline
+import android.content.Context
+import com.bellinicine.core.storage.ProjectRepository
+import com.bellinicine.core.storage.ProjectSummary
 import com.bellinicine.core.model.Transform
 import com.bellinicine.core.model.Vec3
 import kotlinx.coroutines.Job
@@ -27,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.UUID
 
 enum class WorkspaceTab {
@@ -53,7 +58,11 @@ data class WorkspaceUiState(
     val showExportDialog: Boolean = false,
     val exportProgress: Float = 0f,
     val isExporting: Boolean = false,
-    val exportResultPath: String? = null
+    val exportResultPath: String? = null,
+    val showProjectDialog: Boolean = false,
+    val projectList: List<ProjectSummary> = emptyList(),
+    val hasAutosave: Boolean = false,
+    val statusMessage: String? = null
 )
 
 class WorkspaceViewModel : ViewModel() {
@@ -66,6 +75,9 @@ class WorkspaceViewModel : ViewModel() {
     private val redoStack = mutableListOf<Composition>()
 
     init {
+        CompositorPipeline.compositionProvider = { compId ->
+            _uiState.value.project.compositions.firstOrNull { it.id == compId }
+        }
         reevaluateCurrentFrame()
     }
 
@@ -554,5 +566,260 @@ class WorkspaceViewModel : ViewModel() {
             _uiState.value.currentFrame
         )
         _uiState.update { it.copy(evaluatedLayers = eval) }
+    }
+
+    // --- TIMELINE EDITING & LAYER OPERATIONS ---
+
+    fun splitLayerAtPlayhead(layerId: String) {
+        val comp = _uiState.value.activeComposition
+        val frame = _uiState.value.currentFrame
+        val layer = comp.layers.firstOrNull { it.id == layerId } ?: return
+        if (frame <= layer.inPointFrame || frame >= layer.outPointFrame) return
+
+        pushHistoryState()
+        val firstPart = layer.copy(outPointFrame = frame)
+        val secondPart = layer.copy(
+            id = "layer-${UUID.randomUUID()}",
+            name = "${layer.name} (Split)",
+            inPointFrame = frame
+        )
+
+        val newLayers = mutableListOf<Layer>()
+        comp.layers.forEach { l ->
+            if (l.id == layerId) {
+                newLayers.add(firstPart)
+                newLayers.add(secondPart)
+            } else {
+                newLayers.add(l)
+            }
+        }
+        val updatedComp = comp.copy(layers = newLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp, selectedLayerId = secondPart.id) }
+        reevaluateCurrentFrame()
+    }
+
+    fun duplicateLayer(layerId: String) {
+        val comp = _uiState.value.activeComposition
+        val layer = comp.layers.firstOrNull { it.id == layerId } ?: return
+        pushHistoryState()
+
+        val copy = layer.copy(
+            id = "layer-${UUID.randomUUID()}",
+            name = "${layer.name} Copy"
+        )
+        val newLayers = mutableListOf<Layer>()
+        comp.layers.forEach { l ->
+            newLayers.add(l)
+            if (l.id == layerId) {
+                newLayers.add(copy)
+            }
+        }
+        val updatedComp = comp.copy(layers = newLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp, selectedLayerId = copy.id) }
+        reevaluateCurrentFrame()
+    }
+
+    fun deleteLayer(layerId: String) {
+        val comp = _uiState.value.activeComposition
+        if (comp.layers.none { it.id == layerId }) return
+        pushHistoryState()
+
+        val newLayers = comp.layers.filter { it.id != layerId }
+        val newSelected = newLayers.lastOrNull()?.id
+        val updatedComp = comp.copy(layers = newLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp, selectedLayerId = newSelected) }
+        reevaluateCurrentFrame()
+    }
+
+    fun reorderLayer(layerId: String, moveUp: Boolean) {
+        val comp = _uiState.value.activeComposition
+        val idx = comp.layers.indexOfFirst { it.id == layerId }
+        if (idx == -1) return
+
+        val targetIdx = if (moveUp) idx + 1 else idx - 1
+        if (targetIdx !in comp.layers.indices) return
+
+        pushHistoryState()
+        val mutableLayers = comp.layers.toMutableList()
+        val temp = mutableLayers[idx]
+        mutableLayers[idx] = mutableLayers[targetIdx]
+        mutableLayers[targetIdx] = temp
+
+        val updatedComp = comp.copy(layers = mutableLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp) }
+        reevaluateCurrentFrame()
+    }
+
+    fun trimLayerInPoint(layerId: String, newInPoint: Long) {
+        val comp = _uiState.value.activeComposition
+        val layer = comp.layers.firstOrNull { it.id == layerId } ?: return
+        val clamped = newInPoint.coerceIn(0L, layer.outPointFrame - 1)
+
+        val updatedLayers = comp.layers.map {
+            if (it.id == layerId) it.copy(inPointFrame = clamped) else it
+        }
+        val updatedComp = comp.copy(layers = updatedLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp) }
+        reevaluateCurrentFrame()
+    }
+
+    fun trimLayerOutPoint(layerId: String, newOutPoint: Long) {
+        val comp = _uiState.value.activeComposition
+        val layer = comp.layers.firstOrNull { it.id == layerId } ?: return
+        val clamped = newOutPoint.coerceIn(layer.inPointFrame + 1, comp.durationFrames)
+
+        val updatedLayers = comp.layers.map {
+            if (it.id == layerId) it.copy(outPointFrame = clamped) else it
+        }
+        val updatedComp = comp.copy(layers = updatedLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp) }
+        reevaluateCurrentFrame()
+    }
+
+    fun moveLayerTime(layerId: String, deltaFrames: Long) {
+        val comp = _uiState.value.activeComposition
+        val layer = comp.layers.firstOrNull { it.id == layerId } ?: return
+        val duration = layer.outPointFrame - layer.inPointFrame
+        val newIn = (layer.inPointFrame + deltaFrames).coerceAtLeast(0L)
+        val newOut = newIn + duration
+
+        val updatedLayers = comp.layers.map {
+            if (it.id == layerId) it.copy(inPointFrame = newIn, outPointFrame = newOut) else it
+        }
+        val updatedComp = comp.copy(layers = updatedLayers)
+        _uiState.update { it.copy(activeComposition = updatedComp) }
+        reevaluateCurrentFrame()
+    }
+
+    // --- GRAPH EDITOR & KEYFRAME EDITING ---
+
+    fun updateKeyframe(frame: Long, value: Float, interpolation: KeyframeInterpolation) {
+        mutateSelectedLayer { layer ->
+            val cur = layer.transform.rotation
+            if (cur.hasKeyframes()) {
+                val updatedKfs = cur.keyframes.map { kf ->
+                    if (kf.frame == frame) kf.copy(value = value, interpolation = interpolation) else kf
+                }.sortedBy { it.frame }
+                layer.copy(transform = layer.transform.copy(rotation = cur.copy(keyframes = updatedKfs)))
+            } else {
+                val op = layer.transform.opacity
+                val updatedKfs = op.keyframes.map { kf ->
+                    if (kf.frame == frame) kf.copy(value = value, interpolation = interpolation) else kf
+                }.sortedBy { it.frame }
+                layer.copy(transform = layer.transform.copy(opacity = op.copy(keyframes = updatedKfs)))
+            }
+        }
+    }
+
+    // --- PROJECT PERSISTENCE & AUTOSAVE ---
+
+    fun showProjectDialog(show: Boolean) {
+        _uiState.update { it.copy(showProjectDialog = show) }
+    }
+
+    fun refreshProjects(context: Context) {
+        val summaries = ProjectRepository.getProjectSummaries(context)
+        val hasAuto = ProjectRepository.hasAutosave(context)
+        _uiState.update { it.copy(projectList = summaries, hasAutosave = hasAuto) }
+    }
+
+    fun saveCurrentProject(context: Context, customName: String? = null): File {
+        val currentProj = _uiState.value.project
+        val updatedProj = currentProj.copy(
+            name = customName ?: currentProj.name,
+            compositions = listOf(_uiState.value.activeComposition)
+        )
+        val file = ProjectRepository.saveProject(context, updatedProj)
+        _uiState.update { it.copy(project = updatedProj, statusMessage = "Project '${updatedProj.name}' saved") }
+        refreshProjects(context)
+        return file
+    }
+
+    fun loadProject(context: Context, projectId: String): Boolean {
+        val proj = ProjectRepository.loadProject(context, projectId) ?: return false
+        val activeComp = proj.compositions.firstOrNull { it.id == proj.activeCompositionId }
+            ?: proj.compositions.firstOrNull() ?: return false
+
+        undoStack.clear()
+        redoStack.clear()
+        _uiState.update {
+            it.copy(
+                project = proj,
+                activeComposition = activeComp,
+                currentFrame = 0L,
+                selectedLayerId = activeComp.layers.firstOrNull()?.id,
+                statusMessage = "Loaded project '${proj.name}'"
+            )
+        }
+        reevaluateCurrentFrame()
+        updateHistoryFlags()
+        return true
+    }
+
+    fun createNewProject(
+        name: String,
+        width: Int = 1080,
+        height: Int = 1920,
+        fps: Float = 30f,
+        durationFrames: Long = 150L
+    ) {
+        val newComp = Composition(
+            id = "comp-${UUID.randomUUID()}",
+            name = "Main Comp",
+            width = width,
+            height = height,
+            frameRate = fps,
+            durationFrames = durationFrames,
+            layers = emptyList()
+        )
+        val newProj = Project(
+            id = "proj-${UUID.randomUUID()}",
+            name = name,
+            compositions = listOf(newComp),
+            activeCompositionId = newComp.id
+        )
+        undoStack.clear()
+        redoStack.clear()
+        _uiState.update {
+            it.copy(
+                project = newProj,
+                activeComposition = newComp,
+                currentFrame = 0L,
+                selectedLayerId = null,
+                statusMessage = "Created new project '$name'"
+            )
+        }
+        reevaluateCurrentFrame()
+        updateHistoryFlags()
+    }
+
+    fun restoreAutosave(context: Context): Boolean {
+        val autoProj = ProjectRepository.loadAutosave(context) ?: return false
+        val comp = autoProj.compositions.firstOrNull() ?: return false
+        undoStack.clear()
+        redoStack.clear()
+        _uiState.update {
+            it.copy(
+                project = autoProj,
+                activeComposition = comp,
+                currentFrame = 0L,
+                selectedLayerId = comp.layers.firstOrNull()?.id,
+                statusMessage = "Restored autosave successfully"
+            )
+        }
+        reevaluateCurrentFrame()
+        updateHistoryFlags()
+        return true
+    }
+
+    fun triggerAutosave(context: Context) {
+        val projToSave = _uiState.value.project.copy(
+            compositions = listOf(_uiState.value.activeComposition)
+        )
+        ProjectRepository.autosaveProject(context, projToSave)
+    }
+
+    fun clearStatusMessage() {
+        _uiState.update { it.copy(statusMessage = null) }
     }
 }

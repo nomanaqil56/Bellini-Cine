@@ -35,6 +35,7 @@ object ExportEngine {
         context: Context,
         composition: Composition,
         config: ExportConfig,
+        isCancelled: () -> Boolean = { false },
         onProgress: (Float) -> Unit
     ): String = withContext(Dispatchers.IO) {
         val outputDir = File(context.filesDir, "exports").apply { mkdirs() }
@@ -91,23 +92,40 @@ object ExportEngine {
                 }
                 frameBitmap.recycle()
 
+                // Check cancellation
+                if (isCancelled()) {
+                    Log.i(TAG, "Export cancelled by user")
+                    break
+                }
+
                 // Drain encoder outputs into MediaMuxer
                 var outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 5_000L)
-                while (outputIndex >= 0) {
-                    val outputBuffer = encoder.getOutputBuffer(outputIndex)
-                    if (outputBuffer != null && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                        if (!muxerStarted) {
-                            trackIndex = muxer.addTrack(encoder.outputFormat)
-                            muxer.start()
-                            muxerStarted = true
+                while (outputIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    when (outputIndex) {
+                        MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            if (!muxerStarted) {
+                                val newFormat = encoder.outputFormat
+                                trackIndex = muxer.addTrack(newFormat)
+                                muxer.start()
+                                muxerStarted = true
+                                Log.i(TAG, "MediaMuxer started with track format: $newFormat")
+                            }
                         }
-                        if (bufferInfo.size > 0 && muxerStarted) {
-                            outputBuffer.position(bufferInfo.offset)
-                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                            muxer.writeSampleData(trackIndex, outputBuffer, bufferInfo)
+                        MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> {
+                            // Deprecated in API 21, no action needed
+                        }
+                        else -> if (outputIndex >= 0) {
+                            val outputBuffer = encoder.getOutputBuffer(outputIndex)
+                            if (outputBuffer != null && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                                if (bufferInfo.size > 0 && muxerStarted) {
+                                    outputBuffer.position(bufferInfo.offset)
+                                    outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                                    muxer.writeSampleData(trackIndex, outputBuffer, bufferInfo)
+                                }
+                            }
+                            encoder.releaseOutputBuffer(outputIndex, false)
                         }
                     }
-                    encoder.releaseOutputBuffer(outputIndex, false)
                     outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
 
@@ -123,15 +141,29 @@ object ExportEngine {
                 encoder.queueInputBuffer(eosIndex, 0, 0, totalFrames * frameDurationUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             }
 
-            // Drain remaining frames
+            // Drain remaining frames until EOS
             var outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 10_000L)
-            while (outputIndex >= 0) {
-                val outputBuffer = encoder.getOutputBuffer(outputIndex)
-                if (outputBuffer != null && bufferInfo.size > 0 && muxerStarted) {
-                    muxer.writeSampleData(trackIndex, outputBuffer, bufferInfo)
+            while (outputIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                when (outputIndex) {
+                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        if (!muxerStarted) {
+                            val newFormat = encoder.outputFormat
+                            trackIndex = muxer.addTrack(newFormat)
+                            muxer.start()
+                            muxerStarted = true
+                        }
+                    }
+                    else -> if (outputIndex >= 0) {
+                        val outputBuffer = encoder.getOutputBuffer(outputIndex)
+                        if (outputBuffer != null && bufferInfo.size > 0 && muxerStarted) {
+                            outputBuffer.position(bufferInfo.offset)
+                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                            muxer.writeSampleData(trackIndex, outputBuffer, bufferInfo)
+                        }
+                        encoder.releaseOutputBuffer(outputIndex, false)
+                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                    }
                 }
-                encoder.releaseOutputBuffer(outputIndex, false)
-                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
                 outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 5_000L)
             }
 

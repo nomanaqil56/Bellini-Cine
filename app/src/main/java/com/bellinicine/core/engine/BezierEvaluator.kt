@@ -36,14 +36,32 @@ object BezierEvaluator {
             KeyframeInterpolation.BEZIER,
             KeyframeInterpolation.AUTO_BEZIER,
             KeyframeInterpolation.CONTINUOUS_BEZIER -> {
-                val p1x = (kf1.outTangent.influence / 100f).coerceIn(0f, 1f)
-                val p2x = 1f - (kf2.inTangent.influence / 100f).coerceIn(0f, 1f)
+                val deltaVal = kf2.value - kf1.value
+                val p1x = (kf1.outTangent.influence / 100f).coerceIn(0.001f, 0.999f)
+                val p2x = 1f - (kf2.inTangent.influence / 100f).coerceIn(0.001f, 0.999f)
+
+                // Temporal velocity-to-displacement curve calculation
+                val p1y = if (abs(deltaVal) > 1e-4f) {
+                    val speed = when (kf1.interpolation) {
+                        KeyframeInterpolation.AUTO_BEZIER -> deltaVal / totalFrames * 0.5f
+                        else -> kf1.outTangent.speed
+                    }
+                    (speed * totalFrames * p1x / deltaVal).coerceIn(-3f, 4f)
+                } else 0f
+
+                val p2y = if (abs(deltaVal) > 1e-4f) {
+                    val speed = when (kf2.interpolation) {
+                        KeyframeInterpolation.AUTO_BEZIER -> deltaVal / totalFrames * 0.5f
+                        else -> kf2.inTangent.speed
+                    }
+                    1f - (speed * totalFrames * (1f - p2x) / deltaVal).coerceIn(-3f, 4f)
+                } else 1f
 
                 // Temporal curve easing
                 val t = solveCubicBezierT(progress, p1x, p2x)
-                val easedProgress = cubicBezier1D(0f, 0f, 1f, 1f, t)
+                val easedProgress = cubicBezier1D(0f, p1y, p2y, 1f, t)
 
-                kf1.value + (kf2.value - kf1.value) * easedProgress
+                kf1.value + deltaVal * easedProgress
             }
         }
     }

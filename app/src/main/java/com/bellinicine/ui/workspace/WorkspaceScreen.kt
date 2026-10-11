@@ -12,12 +12,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewTimeline
 import androidx.compose.material3.AlertDialog
@@ -34,11 +42,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +66,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.bellinicine.core.render.ExportConfig
 import com.bellinicine.core.render.ExportEngine
+import com.bellinicine.core.storage.ProjectRepository
+import com.bellinicine.core.storage.ProjectSummary
 import com.bellinicine.ui.grapheditor.GraphEditorView
 import com.bellinicine.ui.inspector.PropertyInspector
 import com.bellinicine.ui.theme.AccentPrimary
@@ -67,6 +80,9 @@ import com.bellinicine.ui.theme.TextSecondary
 import com.bellinicine.ui.timeline.TimelineView
 import com.bellinicine.ui.viewport.CompositionCanvas
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,8 +93,17 @@ fun WorkspaceScreen(
     val selectedLayer = state.activeComposition.layers.firstOrNull { it.id == state.selectedLayerId }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.statusMessage) {
+        state.statusMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearStatusMessage()
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -100,6 +125,21 @@ fun WorkspaceScreen(
                     }
                 },
                 actions = {
+                    // Project Manager Dialog Button
+                    IconButton(
+                        onClick = {
+                            viewModel.refreshProjects(context)
+                            viewModel.showProjectDialog(true)
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = "Project Manager",
+                            tint = AccentPrimary
+                        )
+                    }
+
                     // Undo button
                     IconButton(
                         onClick = { viewModel.undo() },
@@ -123,6 +163,18 @@ fun WorkspaceScreen(
                             imageVector = Icons.AutoMirrored.Filled.Redo,
                             contentDescription = "Redo",
                             tint = if (state.canRedo) TextPrimary else TextMuted
+                        )
+                    }
+
+                    // Quick Save Button
+                    IconButton(
+                        onClick = { viewModel.saveCurrentProject(context) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Save,
+                            contentDescription = "Save Project",
+                            tint = TextSecondary
                         )
                     }
 
@@ -197,7 +249,11 @@ fun WorkspaceScreen(
                 CompositionCanvas(
                     composition = state.activeComposition,
                     evaluatedLayers = state.evaluatedLayers,
-                    selectedLayerId = state.selectedLayerId
+                    selectedLayerId = state.selectedLayerId,
+                    onUpdatePosition = { x, y -> viewModel.updateLayerPosition(x, y) },
+                    onUpdateScale = { sx, sy -> viewModel.updateLayerScale(sx, sy) },
+                    onUpdateRotation = { deg -> viewModel.updateLayerRotation(deg) },
+                    onUpdateAnchorPoint = { ax, ay -> viewModel.updateLayerAnchorPoint(ax, ay) }
                 )
             }
 
@@ -223,7 +279,14 @@ fun WorkspaceScreen(
                             onToggleSolo = { viewModel.toggleLayerSolo(it) },
                             onToggleLock = { viewModel.toggleLayerLock(it) },
                             onAddSolid = { viewModel.addSolidLayer("New Solid", 0xFFE040FB, 500, 500) },
-                            onAddText = { viewModel.addTextLayer("Cine Motion") }
+                            onAddText = { viewModel.addTextLayer("Cine Motion") },
+                            onSplitLayer = { viewModel.splitLayerAtPlayhead(it) },
+                            onDuplicateLayer = { viewModel.duplicateLayer(it) },
+                            onDeleteLayer = { viewModel.deleteLayer(it) },
+                            onReorderLayer = { id, up -> viewModel.reorderLayer(id, up) },
+                            onTrimInPoint = { id, f -> viewModel.trimLayerInPoint(id, f) },
+                            onTrimOutPoint = { id, f -> viewModel.trimLayerOutPoint(id, f) },
+                            onMoveLayerTime = { id, df -> viewModel.moveLayerTime(id, df) }
                         )
                     }
                     WorkspaceTab.GRAPH_EDITOR -> {
@@ -232,7 +295,8 @@ fun WorkspaceScreen(
                             selectedLayer = selectedLayer,
                             currentFrame = state.currentFrame,
                             isSpeedGraph = state.isSpeedGraph,
-                            onToggleSpeedGraph = { viewModel.toggleSpeedGraph(it) }
+                            onToggleSpeedGraph = { viewModel.toggleSpeedGraph(it) },
+                            onUpdateKeyframe = { f, v, interp -> viewModel.updateKeyframe(f, v, interp) }
                         )
                     }
                     WorkspaceTab.EFFECTS_LIBRARY -> {
@@ -254,6 +318,34 @@ fun WorkspaceScreen(
                 }
             }
         }
+    }
+
+    // Project Manager Dialog
+    if (state.showProjectDialog) {
+        ProjectManagerDialog(
+            projectList = state.projectList,
+            hasAutosave = state.hasAutosave,
+            onDismiss = { viewModel.showProjectDialog(false) },
+            onCreateNew = { name ->
+                viewModel.createNewProject(name)
+                viewModel.showProjectDialog(false)
+            },
+            onSave = {
+                viewModel.saveCurrentProject(context)
+            },
+            onLoad = { projId ->
+                viewModel.loadProject(context, projId)
+                viewModel.showProjectDialog(false)
+            },
+            onRestoreAutosave = {
+                viewModel.restoreAutosave(context)
+                viewModel.showProjectDialog(false)
+            },
+            onDelete = { projId ->
+                ProjectRepository.deleteProject(context, projId)
+                viewModel.refreshProjects(context)
+            }
+        )
     }
 
     // Export Dialog
@@ -360,6 +452,120 @@ private fun ExportDialog(
                 OutlinedButton(onClick = onDismiss) {
                     Text("Cancel")
                 }
+            }
+        },
+        containerColor = PanelHeader
+    )
+}
+
+@Composable
+private fun ProjectManagerDialog(
+    projectList: List<ProjectSummary>,
+    hasAutosave: Boolean,
+    onDismiss: () -> Unit,
+    onCreateNew: (String) -> Unit,
+    onSave: () -> Unit,
+    onLoad: (String) -> Unit,
+    onRestoreAutosave: () -> Unit,
+    onDelete: (String) -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Folder, contentDescription = null, tint = AccentPrimary)
+                Text("Project Manager", fontWeight = FontWeight.Bold, color = TextPrimary, modifier = Modifier.padding(start = 8.dp))
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth().height(360.dp)) {
+                // Top Action Buttons: New, Save, Restore
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { onCreateNew("Bellini Project ${System.currentTimeMillis() % 1000}") },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.weight(1f).height(36.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Text("New", fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
+                    }
+
+                    Button(
+                        onClick = onSave,
+                        colors = ButtonDefaults.buttonColors(containerColor = BorderDark),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.weight(1f).height(36.dp)
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Text("Save", fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
+                    }
+
+                    if (hasAutosave) {
+                        Button(
+                            onClick = onRestoreAutosave,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9100)),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.weight(1f).height(36.dp)
+                        ) {
+                            Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Text("Recover", fontSize = 11.sp, modifier = Modifier.padding(start = 2.dp))
+                        }
+                    }
+                }
+
+                Text("Saved Projects (${projectList.size})", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextSecondary, modifier = Modifier.padding(bottom = 6.dp))
+
+                if (projectList.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No saved projects found.", fontSize = 12.sp, color = TextMuted)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(projectList) { proj ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = PanelDark),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onLoad(proj.id) }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(proj.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TextPrimary)
+                                        Text(
+                                            "${proj.compositionCount} composition(s) • ${dateFormat.format(Date(proj.lastModified))}",
+                                            fontSize = 10.sp,
+                                            color = TextMuted
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { onDelete(proj.id) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Close")
             }
         },
         containerColor = PanelHeader

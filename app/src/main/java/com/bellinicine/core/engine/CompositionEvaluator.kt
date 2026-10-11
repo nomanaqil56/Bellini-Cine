@@ -92,7 +92,7 @@ object CompositionEvaluator {
         }
     }
 
-    private fun evaluateFloatProperty(prop: AnimatedProperty<Float>, frame: Long, seconds: Float): Float {
+    fun evaluateFloatProperty(prop: AnimatedProperty<Float>, frame: Long, seconds: Float = 0f): Float {
         var value = if (prop.hasKeyframes()) {
             val kfs = prop.keyframes.sortedBy { it.frame }
             val first = kfs.first()
@@ -117,7 +117,7 @@ object CompositionEvaluator {
         return value
     }
 
-    private fun evaluateVec3Property(prop: AnimatedProperty<Vec3>, frame: Long, seconds: Float): Vec3 {
+    fun evaluateVec3Property(prop: AnimatedProperty<Vec3>, frame: Long, seconds: Float = 0f): Vec3 {
         var value = if (prop.hasKeyframes()) {
             val kfs = prop.keyframes.sortedBy { it.frame }
             val first = kfs.first()
