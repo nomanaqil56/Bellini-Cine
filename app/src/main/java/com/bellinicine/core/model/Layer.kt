@@ -34,7 +34,17 @@ sealed class LayerData {
     ) : LayerData()
 
     @Serializable
-    data class Shape(val shapeType: String, val fillColor: Long = 0xFF7C4DFF, val strokeColor: Long = 0xFFFFFFFF, val strokeWidth: Float = 4f) : LayerData()
+    data class Shape(
+        val shapeType: String = "Rectangle", // "Rectangle", "Ellipse", "Star", "Polygon"
+        val width: Float = 400f,
+        val height: Float = 400f,
+        val cornerRadius: Float = 0f,
+        val points: Int = 5,
+        val innerRadiusRatio: Float = 0.45f,
+        val fillColor: Long = 0xFF7C4DFF,
+        val strokeColor: Long = 0xFFFFFFFF,
+        val strokeWidth: Float = 4f
+    ) : LayerData()
 
     @Serializable
     object NullObject : LayerData()

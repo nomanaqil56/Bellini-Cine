@@ -16,12 +16,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
@@ -40,10 +46,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bellinicine.core.model.BlendMode
+import com.bellinicine.core.model.EffectCategory
 import com.bellinicine.core.model.Layer
 import com.bellinicine.core.model.TrackMatteType
 import com.bellinicine.ui.theme.AccentPrimary
-import com.bellinicine.ui.theme.BorderDark
 import com.bellinicine.ui.theme.KeyframeAmber
 import com.bellinicine.ui.theme.PanelDark
 import com.bellinicine.ui.theme.PanelHeader
@@ -54,6 +60,16 @@ import com.bellinicine.ui.theme.TextSecondary
 @Composable
 fun PropertyInspector(
     selectedLayer: Layer?,
+    onUpdateOpacity: (Float) -> Unit,
+    onUpdateRotation: (Float) -> Unit,
+    onUpdatePosition: (Float, Float) -> Unit,
+    onUpdateScale: (Float, Float) -> Unit,
+    onUpdateBlendMode: (BlendMode) -> Unit,
+    onUpdateTrackMatte: (TrackMatteType) -> Unit,
+    onToggleKeyframing: (String) -> Unit,
+    onAddEffect: (String, EffectCategory) -> Unit,
+    onRemoveEffect: (String) -> Unit,
+    onToggleEffect: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (selectedLayer == null) {
@@ -66,7 +82,7 @@ fun PropertyInspector(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("No Layer Selected", color = TextMuted, fontSize = 14.sp)
-            Text("Tap a layer in the timeline or canvas to inspect properties.", color = TextMuted, fontSize = 11.sp)
+            Text("Tap a layer in the timeline or canvas to inspect and edit properties.", color = TextMuted, fontSize = 11.sp)
         }
         return
     }
@@ -77,8 +93,8 @@ fun PropertyInspector(
             .background(PanelDark)
             .verticalScroll(rememberScrollState())
     ) {
-        // Layer Title & Type
-        Surface(color = PanelHeader, modifier = Modifier.fillMaxWidth().height(40.dp)) {
+        // Layer Header
+        Surface(color = PanelHeader, modifier = Modifier.fillMaxWidth().height(42.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 12.dp)
@@ -89,11 +105,11 @@ fun PropertyInspector(
             }
         }
 
-        // Section: Blend Mode & Matte
+        // Blend Mode & Track Matte Controls
         Card(
             colors = CardDefaults.cardColors(containerColor = PanelDark),
             shape = RoundedCornerShape(0.dp),
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -101,7 +117,10 @@ fun PropertyInspector(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
             ) {
                 Text("Blend Mode", fontSize = 12.sp, color = TextSecondary)
-                BlendModeDropdown(currentMode = selectedLayer.blendMode)
+                BlendModeDropdown(
+                    currentMode = selectedLayer.blendMode,
+                    onSelect = onUpdateBlendMode
+                )
             }
 
             Row(
@@ -110,13 +129,16 @@ fun PropertyInspector(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
             ) {
                 Text("Track Matte", fontSize = 12.sp, color = TextSecondary)
-                Text(selectedLayer.trackMatteType.name, fontSize = 12.sp, color = AccentPrimary)
+                TrackMatteDropdown(
+                    currentMatte = selectedLayer.trackMatteType,
+                    onSelect = onUpdateTrackMatte
+                )
             }
         }
 
-        // Section: Transform Group
+        // Section: Transform Properties
         Text(
-            text = "TRANSFORM",
+            text = "TRANSFORM CONTROLS",
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             color = TextMuted,
@@ -124,63 +146,127 @@ fun PropertyInspector(
         )
 
         // Opacity
-        var opacityVal by remember(selectedLayer) { mutableStateOf(selectedLayer.transform.opacity.defaultValue) }
+        val currentOpacity = selectedLayer.transform.opacity.defaultValue
         PropertyRow(
             name = "Opacity",
-            valueText = "${opacityVal.toInt()}%",
-            isKeyframed = selectedLayer.transform.opacity.hasKeyframes()
+            valueText = "${currentOpacity.toInt()}%",
+            isKeyframed = selectedLayer.transform.opacity.hasKeyframes(),
+            onToggleStopwatch = { onToggleKeyframing("opacity") }
         ) {
             Slider(
-                value = opacityVal,
-                onValueChange = { opacityVal = it },
+                value = currentOpacity,
+                onValueChange = { onUpdateOpacity(it) },
                 valueRange = 0f..100f,
                 colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
             )
         }
 
         // Rotation
+        val currentRotation = selectedLayer.transform.rotation.defaultValue
         PropertyRow(
             name = "Rotation",
-            valueText = "${selectedLayer.transform.rotation.defaultValue.toInt()}°",
-            isKeyframed = selectedLayer.transform.rotation.hasKeyframes()
-        )
+            valueText = "${currentRotation.toInt()}°",
+            isKeyframed = selectedLayer.transform.rotation.hasKeyframes(),
+            onToggleStopwatch = { onToggleKeyframing("rotation") }
+        ) {
+            Slider(
+                value = currentRotation,
+                onValueChange = { onUpdateRotation(it) },
+                valueRange = -360f..360f,
+                colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+            )
+        }
 
-        // Position
+        // Position X & Y
         val pos = selectedLayer.transform.position.defaultValue
         PropertyRow(
-            name = "Position",
-            valueText = "${pos.x.toInt()}, ${pos.y.toInt()}",
-            isKeyframed = selectedLayer.transform.position.hasKeyframes()
-        )
+            name = "Position X/Y",
+            valueText = "X: ${pos.x.toInt()}  Y: ${pos.y.toInt()}",
+            isKeyframed = selectedLayer.transform.position.hasKeyframes(),
+            onToggleStopwatch = { onToggleKeyframing("position") }
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Slider(
+                    value = pos.x,
+                    onValueChange = { onUpdatePosition(it, pos.y) },
+                    valueRange = 0f..1080f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+                Slider(
+                    value = pos.y,
+                    onValueChange = { onUpdatePosition(pos.x, it) },
+                    valueRange = 0f..1920f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+        }
 
         // Scale
-        val scl = selectedLayer.transform.scale.defaultValue
+        val scale = selectedLayer.transform.scale.defaultValue
         PropertyRow(
             name = "Scale",
-            valueText = "${scl.x.toInt()}%, ${scl.y.toInt()}%",
-            isKeyframed = selectedLayer.transform.scale.hasKeyframes()
-        )
+            valueText = "${scale.x.toInt()}%",
+            isKeyframed = selectedLayer.transform.scale.hasKeyframes(),
+            onToggleStopwatch = { onToggleKeyframing("scale") }
+        ) {
+            Slider(
+                value = scale.x,
+                onValueChange = { onUpdateScale(it, it) },
+                valueRange = 0f..300f,
+                colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+            )
+        }
 
-        // Effects Stack
-        Text(
-            text = "EFFECTS & FILTERS",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = TextMuted,
-            modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 4.dp)
-        )
+        // Section: Visual Effects & Filters
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 4.dp)
+        ) {
+            Text(
+                text = "APPLIED EFFECTS (${selectedLayer.effects.size})",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextMuted
+            )
 
-        listOf("Gaussian Blur", "Glow & Bloom", "Color Wheels / LUT", "Turbulent Displace").forEach { effectName ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(16.dp))
-                Text(effectName, fontSize = 12.sp, color = TextPrimary, modifier = Modifier.padding(start = 8.dp))
-                Spacer(modifier = Modifier.weight(1f))
-                Text("fx", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AccentPrimary)
+            AddEffectMenu(onAddEffect = onAddEffect)
+        }
+
+        if (selectedLayer.effects.isEmpty()) {
+            Text(
+                text = "No effects applied. Tap '+ Add Effect' above.",
+                fontSize = 11.sp,
+                color = TextMuted,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        } else {
+            selectedLayer.effects.forEach { effect ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = PanelHeader),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = effect.enabled,
+                            onCheckedChange = { onToggleEffect(effect.id) },
+                            colors = CheckboxDefaults.colors(checkedColor = AccentPrimary),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(16.dp).padding(start = 4.dp))
+                        Text(effect.name, fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp))
+                        Spacer(modifier = Modifier.weight(1f))
+                        IconButton(onClick = { onRemoveEffect(effect.id) }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
             }
         }
     }
@@ -191,6 +277,7 @@ private fun PropertyRow(
     name: String,
     valueText: String,
     isKeyframed: Boolean,
+    onToggleStopwatch: () -> Unit,
     content: (@Composable () -> Unit)? = null
 ) {
     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
@@ -200,14 +287,15 @@ private fun PropertyRow(
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Stopwatch icon
-                Icon(
-                    imageVector = Icons.Default.Timer,
-                    contentDescription = "Stopwatch",
-                    tint = if (isKeyframed) KeyframeAmber else TextMuted,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(name, fontSize = 12.sp, color = TextSecondary, modifier = Modifier.padding(start = 6.dp))
+                IconButton(onClick = onToggleStopwatch, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Timer,
+                        contentDescription = "Stopwatch",
+                        tint = if (isKeyframed) KeyframeAmber else TextMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Text(name, fontSize = 12.sp, color = TextSecondary, modifier = Modifier.padding(start = 4.dp))
             }
             Text(valueText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
         }
@@ -216,7 +304,7 @@ private fun PropertyRow(
 }
 
 @Composable
-private fun BlendModeDropdown(currentMode: BlendMode) {
+private fun BlendModeDropdown(currentMode: BlendMode, onSelect: (BlendMode) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
 
     Box {
@@ -237,13 +325,98 @@ private fun BlendModeDropdown(currentMode: BlendMode) {
                 BlendMode.SCREEN,
                 BlendMode.OVERLAY,
                 BlendMode.ADD,
-                BlendMode.DIFFERENCE
+                BlendMode.COLOR_DODGE,
+                BlendMode.DIFFERENCE,
+                BlendMode.EXCLUSION
             ).forEach { mode ->
                 DropdownMenuItem(
                     text = { Text(mode.displayName) },
-                    onClick = { expanded = false }
+                    onClick = {
+                        onSelect(mode)
+                        expanded = false
+                    }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TrackMatteDropdown(currentMatte: TrackMatteType, onSelect: (TrackMatteType) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        Text(
+            text = currentMatte.name,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = AccentPrimary,
+            modifier = Modifier.clickable { expanded = true }
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            TrackMatteType.entries.forEach { type ->
+                DropdownMenuItem(
+                    text = { Text(type.name) },
+                    onClick = {
+                        onSelect(type)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddEffectMenu(onAddEffect: (String, EffectCategory) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        FilledTonalButton(
+            onClick = { expanded = true },
+            shape = RoundedCornerShape(4.dp),
+            colors = ButtonDefaults.filledTonalButtonColors(containerColor = AccentPrimary),
+            modifier = Modifier.height(28.dp)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
+            Text("Add Effect", fontSize = 10.sp, color = Color.White, modifier = Modifier.padding(start = 2.dp))
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Gaussian Blur") },
+                onClick = {
+                    onAddEffect("Gaussian Blur", EffectCategory.BLUR_AND_SHARPEN)
+                    expanded = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Glow & Bloom") },
+                onClick = {
+                    onAddEffect("Glow & Bloom", EffectCategory.STYLIZE)
+                    expanded = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Color Curves / Tint") },
+                onClick = {
+                    onAddEffect("Color Curves", EffectCategory.COLOR_CORRECTION)
+                    expanded = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Turbulent Displace") },
+                onClick = {
+                    onAddEffect("Turbulent Displace", EffectCategory.DISTORT)
+                    expanded = false
+                }
+            )
         }
     }
 }

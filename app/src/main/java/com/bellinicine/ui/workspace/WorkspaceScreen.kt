@@ -1,6 +1,7 @@
 package com.bellinicine.ui.workspace
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,20 +11,28 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.ShowChart
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewTimeline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,13 +41,20 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.bellinicine.core.render.ExportConfig
+import com.bellinicine.core.render.ExportEngine
 import com.bellinicine.ui.grapheditor.GraphEditorView
 import com.bellinicine.ui.inspector.PropertyInspector
 import com.bellinicine.ui.theme.AccentPrimary
@@ -50,6 +66,7 @@ import com.bellinicine.ui.theme.TextPrimary
 import com.bellinicine.ui.theme.TextSecondary
 import com.bellinicine.ui.timeline.TimelineView
 import com.bellinicine.ui.viewport.CompositionCanvas
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +75,8 @@ fun WorkspaceScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val selectedLayer = state.activeComposition.layers.firstOrNull { it.id == state.selectedLayerId }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -81,10 +100,37 @@ fun WorkspaceScreen(
                     }
                 },
                 actions = {
+                    // Undo button
+                    IconButton(
+                        onClick = { viewModel.undo() },
+                        enabled = state.canUndo,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = "Undo",
+                            tint = if (state.canUndo) TextPrimary else TextMuted
+                        )
+                    }
+
+                    // Redo button
+                    IconButton(
+                        onClick = { viewModel.redo() },
+                        enabled = state.canRedo,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Redo,
+                            contentDescription = "Redo",
+                            tint = if (state.canRedo) TextPrimary else TextMuted
+                        )
+                    }
+
+                    // Export Button
                     Button(
-                        onClick = { /* Export modal / Render queue */ },
+                        onClick = { viewModel.showExportDialog(true) },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary),
-                        modifier = Modifier.height(32.dp).padding(end = 8.dp)
+                        modifier = Modifier.height(32.dp).padding(start = 6.dp, end = 8.dp)
                     ) {
                         Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
                         Text("Export", fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
@@ -113,7 +159,7 @@ fun WorkspaceScreen(
                 NavigationBarItem(
                     selected = state.activeTab == WorkspaceTab.GRAPH_EDITOR,
                     onClick = { viewModel.setActiveTab(WorkspaceTab.GRAPH_EDITOR) },
-                    icon = { Icon(Icons.Default.ShowChart, contentDescription = "Graph Editor") },
+                    icon = { Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = "Graph Editor") },
                     label = { Text("Graph Editor", fontSize = 10.sp) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = AccentPrimary,
@@ -155,7 +201,7 @@ fun WorkspaceScreen(
                 )
             }
 
-            // Lower Half: Tabbed Workspace Panel (Timeline, Graph Editor, Inspector)
+            // Lower Half: Tabbed Workspace Panel
             Surface(
                 color = PanelDark,
                 modifier = Modifier
@@ -176,7 +222,7 @@ fun WorkspaceScreen(
                             onToggleVisibility = { viewModel.toggleLayerVisibility(it) },
                             onToggleSolo = { viewModel.toggleLayerSolo(it) },
                             onToggleLock = { viewModel.toggleLayerLock(it) },
-                            onAddSolid = { viewModel.addSolidLayer("New Solid", 0xFFE040FB, 400, 400) },
+                            onAddSolid = { viewModel.addSolidLayer("New Solid", 0xFFE040FB, 500, 500) },
                             onAddText = { viewModel.addTextLayer("Cine Motion") }
                         )
                     }
@@ -191,7 +237,17 @@ fun WorkspaceScreen(
                     }
                     WorkspaceTab.EFFECTS_LIBRARY -> {
                         PropertyInspector(
-                            selectedLayer = selectedLayer
+                            selectedLayer = selectedLayer,
+                            onUpdateOpacity = { viewModel.updateLayerOpacity(it) },
+                            onUpdateRotation = { viewModel.updateLayerRotation(it) },
+                            onUpdatePosition = { x, y -> viewModel.updateLayerPosition(x, y) },
+                            onUpdateScale = { sx, sy -> viewModel.updateLayerScale(sx, sy) },
+                            onUpdateBlendMode = { viewModel.updateLayerBlendMode(it) },
+                            onUpdateTrackMatte = { viewModel.updateLayerTrackMatte(it) },
+                            onToggleKeyframing = { viewModel.togglePropertyKeyframing(it) },
+                            onAddEffect = { name, cat -> viewModel.addEffectToSelectedLayer(name, cat) },
+                            onRemoveEffect = { viewModel.removeEffectFromSelectedLayer(it) },
+                            onToggleEffect = { viewModel.toggleEffectEnabled(it) }
                         )
                     }
                     else -> {}
@@ -199,4 +255,113 @@ fun WorkspaceScreen(
             }
         }
     }
+
+    // Export Dialog
+    if (state.showExportDialog) {
+        ExportDialog(
+            isExporting = state.isExporting,
+            progress = state.exportProgress,
+            resultPath = state.exportResultPath,
+            onDismiss = {
+                if (!state.isExporting) viewModel.showExportDialog(false)
+            },
+            onStartExport = { config ->
+                viewModel.setExportProgress(0f, true)
+                coroutineScope.launch {
+                    val path = ExportEngine.exportComposition(
+                        context = context,
+                        composition = state.activeComposition,
+                        config = config,
+                        onProgress = { p -> viewModel.setExportProgress(p, true) }
+                    )
+                    viewModel.setExportProgress(1f, false, path)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ExportDialog(
+    isExporting: Boolean,
+    progress: Float,
+    resultPath: String?,
+    onDismiss: () -> Unit,
+    onStartExport: (ExportConfig) -> Unit
+) {
+    var selectedPreset by remember { mutableStateOf("1080p Vertical (9:16)") }
+    var selectedFps by remember { mutableStateOf(30f) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Export Composition", fontWeight = FontWeight.Bold, color = TextPrimary) },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (resultPath != null) {
+                    Text("Export Complete!", fontWeight = FontWeight.Bold, color = AccentPrimary)
+                    Text("Saved to:\n$resultPath", fontSize = 11.sp, color = TextSecondary, modifier = Modifier.padding(top = 4.dp))
+                } else if (isExporting) {
+                    Text("Rendering frames...", fontSize = 12.sp, color = TextSecondary)
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        color = AccentPrimary
+                    )
+                    Text("${(progress * 100).toInt()}% completed", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                } else {
+                    Text("Preset: $selectedPreset", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                    Row(modifier = Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { selectedPreset = "1080p Vertical (9:16)" },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (selectedPreset.contains("Vertical")) AccentPrimary else BorderDark
+                            ),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.weight(1f).height(36.dp)
+                        ) {
+                            Text("9:16", fontSize = 11.sp)
+                        }
+
+                        Button(
+                            onClick = { selectedPreset = "1080p Landscape (16:9)" },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (selectedPreset.contains("Landscape")) AccentPrimary else BorderDark
+                            ),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.weight(1f).height(36.dp)
+                        ) {
+                            Text("16:9", fontSize = 11.sp)
+                        }
+                    }
+
+                    Text("Frame Rate: ${selectedFps.toInt()} fps", fontSize = 12.sp, color = TextSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            if (resultPath != null || !isExporting) {
+                Button(
+                    onClick = {
+                        if (resultPath != null) {
+                            onDismiss()
+                        } else {
+                            val (w, h) = if (selectedPreset.contains("Vertical")) Pair(1080, 1920) else Pair(1920, 1080)
+                            onStartExport(ExportConfig(width = w, height = h, fps = selectedFps))
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary)
+                ) {
+                    Text(if (resultPath != null) "Done" else "Start Render")
+                }
+            }
+        },
+        dismissButton = {
+            if (!isExporting) {
+                OutlinedButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        },
+        containerColor = PanelHeader
+    )
 }
