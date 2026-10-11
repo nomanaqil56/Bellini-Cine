@@ -20,6 +20,19 @@ import kotlin.math.min
  */
 object EffectProcessor {
 
+    fun hasProcessorFor(effectId: String): Boolean {
+        return when (effectId) {
+            EffectRegistry.ID_FAST_BLUR,
+            EffectRegistry.ID_GLOW,
+            EffectRegistry.ID_BRIGHTNESS_CONTRAST,
+            EffectRegistry.ID_INVERT,
+            EffectRegistry.ID_HUE_SATURATION,
+            EffectRegistry.ID_TINT,
+            EffectRegistry.ID_SOLID_COMPOSITE -> true
+            else -> false
+        }
+    }
+
     fun applyEffects(
         sourceBitmap: Bitmap,
         effects: List<Effect>,

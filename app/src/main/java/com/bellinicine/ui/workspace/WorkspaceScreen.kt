@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,15 +20,22 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.automirrored.filled.Undo
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.ViewTimeline
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -94,6 +102,42 @@ fun WorkspaceScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        com.bellinicine.core.render.VideoFrameDecoder.appContext = context.applicationContext
+    }
+
+    var pendingRelinkAssetId by remember { mutableStateOf<String?>(null) }
+
+    val mediaPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+            viewModel.importMediaAsset(context, uri.toString())
+        }
+    }
+
+    val relinkPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val assetId = pendingRelinkAssetId
+        if (uri != null && assetId != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+            viewModel.relinkMediaAsset(assetId, uri.toString())
+        }
+        pendingRelinkAssetId = null
+    }
 
     LaunchedEffect(state.statusMessage) {
         state.statusMessage?.let {
@@ -309,9 +353,28 @@ fun WorkspaceScreen(
                             onUpdateBlendMode = { viewModel.updateLayerBlendMode(it) },
                             onUpdateTrackMatte = { viewModel.updateLayerTrackMatte(it) },
                             onToggleKeyframing = { viewModel.togglePropertyKeyframing(it) },
-                            onAddEffect = { name, cat -> viewModel.addEffectToSelectedLayer(name, cat) },
+                            onAddEffect = { id -> viewModel.addEffectToSelectedLayer(id) },
                             onRemoveEffect = { viewModel.removeEffectFromSelectedLayer(it) },
-                            onToggleEffect = { viewModel.toggleEffectEnabled(it) }
+                            onToggleEffect = { viewModel.toggleEffectEnabled(it) },
+                            onUpdateEffectSlider = { id, name, v -> viewModel.updateEffectSlider(id, name, v) },
+                            onUpdateEffectCheckbox = { id, name, v -> viewModel.updateEffectCheckbox(id, name, v) },
+                            onReorderEffect = { idx, up -> viewModel.reorderEffect(idx, up) }
+                        )
+                    }
+                    WorkspaceTab.PROJECT_ASSETS -> {
+                        ProjectMediaBin(
+                            assets = state.project.assets,
+                            context = context,
+                            onImportMedia = {
+                                mediaPickerLauncher.launch(arrayOf("image/*", "video/*"))
+                            },
+                            onAddToComp = { assetId ->
+                                viewModel.addFootageLayerFromAsset(assetId)
+                            },
+                            onRelink = { assetId ->
+                                pendingRelinkAssetId = assetId
+                                relinkPickerLauncher.launch(arrayOf("image/*", "video/*"))
+                            }
                         )
                     }
                     else -> {}
@@ -583,4 +646,120 @@ private fun ProjectManagerDialog(
         },
         containerColor = PanelHeader
     )
+}
+
+@Composable
+private fun ProjectMediaBin(
+    assets: List<com.bellinicine.core.model.FootageAsset>,
+    context: android.content.Context,
+    onImportMedia: () -> Unit,
+    onAddToComp: (String) -> Unit,
+    onRelink: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(PanelDark)
+            .padding(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text("PROJECT MEDIA BIN", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextMuted)
+                Text("${assets.size} imported asset(s)", fontSize = 11.sp, color = TextSecondary)
+            }
+            Button(
+                onClick = onImportMedia,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary),
+                shape = RoundedCornerShape(4.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(14.dp))
+                Text("Import Media", fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
+            }
+        }
+
+        if (assets.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(PanelHeader, RoundedCornerShape(6.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
+                    Icon(Icons.Default.VideoFile, contentDescription = null, tint = TextMuted, modifier = Modifier.size(40.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("No Media Assets Imported", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TextPrimary)
+                    Text("Tap 'Import Media' above to import videos or images via Android Storage Access Framework.", fontSize = 11.sp, color = TextMuted, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(assets) { asset ->
+                    val isAvailable = remember(asset.uri) {
+                        com.bellinicine.core.render.VideoFrameDecoder.isMediaAvailable(context, asset.uri)
+                    }
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = PanelHeader),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (asset.mediaType == "video") Icons.Default.VideoFile else Icons.Default.Image,
+                                contentDescription = null,
+                                tint = AccentPrimary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(asset.name, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = TextPrimary)
+                                Text(
+                                    "${asset.width}x${asset.height} • ${asset.mediaType.uppercase()}${if (asset.durationSeconds > 0) " • ${String.format(java.util.Locale.US, "%.1fs", asset.durationSeconds)}" else ""}",
+                                    fontSize = 10.sp,
+                                    color = TextMuted
+                                )
+                                if (!isAvailable) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(12.dp))
+                                        Text("Media Missing / Unlinked", fontSize = 10.sp, color = Color(0xFFFF5252), modifier = Modifier.padding(start = 4.dp))
+                                    }
+                                }
+                            }
+
+                            if (!isAvailable) {
+                                Button(
+                                    onClick = { onRelink(asset.id) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9100)),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(12.dp))
+                                    Text("Relink", fontSize = 10.sp, modifier = Modifier.padding(start = 2.dp))
+                                }
+                            } else {
+                                Button(
+                                    onClick = { onAddToComp(asset.id) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
+                                    Text("Add to Comp", fontSize = 10.sp, modifier = Modifier.padding(start = 2.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

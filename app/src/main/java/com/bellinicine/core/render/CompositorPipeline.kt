@@ -270,7 +270,7 @@ object CompositorPipeline {
             }
 
             is LayerData.Footage -> {
-                renderFootage(canvas, data, paint, alpha, frame, fps)
+                renderFootage(canvas, layer, data, paint, alpha, frame, fps)
             }
 
             is LayerData.Precomp -> {
@@ -341,17 +341,30 @@ object CompositorPipeline {
         layerBmp.recycle()
     }
 
+    fun computeSourceMediaFrame(
+        compositionFrame: Long,
+        startTimeFrame: Long,
+        timeStretch: Float
+    ): Long {
+        val relativeFrame = compositionFrame - startTimeFrame
+        val stretchFactor = if (timeStretch != 0f) timeStretch / 100f else 1f
+        val mediaFrame = (relativeFrame / stretchFactor).toLong()
+        return mediaFrame.coerceAtLeast(0L)
+    }
+
     private fun renderFootage(
         canvas: Canvas,
+        layer: com.bellinicine.core.model.Layer,
         footage: LayerData.Footage,
         paint: Paint,
         alpha: Float,
         frame: Long,
         fps: Float
     ) {
+        val sourceFrame = computeSourceMediaFrame(frame, layer.startTimeFrame, layer.timeStretch)
         val decoded = videoFrameProvider.getFrame(
             mediaUri = footage.mediaUri,
-            frameNumber = frame,
+            frameNumber = sourceFrame,
             fps = fps,
             targetWidth = footage.naturalWidth,
             targetHeight = footage.naturalHeight
@@ -475,27 +488,29 @@ object CompositorPipeline {
         val safeH = max(1, bufferH)
 
         val targetBmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
-        val targetCanvas = Canvas(targetBmp)
-        renderSingleEvaluatedLayer(targetCanvas, targetEval, frame, fps)
-
         val matteBmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
-        val matteCanvas = Canvas(matteBmp)
-        renderSingleEvaluatedLayer(matteCanvas, matteEval, frame, fps)
+        try {
+            val targetCanvas = Canvas(targetBmp)
+            renderSingleEvaluatedLayer(targetCanvas, targetEval, frame, fps)
 
-        when (type) {
-            TrackMatteType.ALPHA -> applyAlphaMatte(targetBmp, matteBmp, inverted = false)
-            TrackMatteType.ALPHA_INVERTED -> applyAlphaMatte(targetBmp, matteBmp, inverted = true)
-            TrackMatteType.LUMA -> applyLumaMatte(targetBmp, matteBmp, inverted = false)
-            TrackMatteType.LUMA_INVERTED -> applyLumaMatte(targetBmp, matteBmp, inverted = true)
-            TrackMatteType.NONE -> {}
+            val matteCanvas = Canvas(matteBmp)
+            renderSingleEvaluatedLayer(matteCanvas, matteEval, frame, fps)
+
+            when (type) {
+                TrackMatteType.ALPHA -> applyAlphaMatte(targetBmp, matteBmp, inverted = false)
+                TrackMatteType.ALPHA_INVERTED -> applyAlphaMatte(targetBmp, matteBmp, inverted = true)
+                TrackMatteType.LUMA -> applyLumaMatte(targetBmp, matteBmp, inverted = false)
+                TrackMatteType.LUMA_INVERTED -> applyLumaMatte(targetBmp, matteBmp, inverted = true)
+                TrackMatteType.NONE -> {}
+            }
+
+            val compPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            applyBlendMode(compPaint, targetEval.layer.blendMode)
+            canvas.drawBitmap(targetBmp, 0f, 0f, compPaint)
+        } finally {
+            targetBmp.recycle()
+            matteBmp.recycle()
         }
-
-        val compPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        applyBlendMode(compPaint, targetEval.layer.blendMode)
-        canvas.drawBitmap(targetBmp, 0f, 0f, compPaint)
-
-        targetBmp.recycle()
-        matteBmp.recycle()
     }
 
     fun applyAlphaMattePixels(
@@ -514,15 +529,14 @@ object CompositorPipeline {
             val factor = if (inverted) (255 - mA) / 255f else mA / 255f
 
             val newA = (tA * factor).toInt().coerceIn(0, 255)
-            val tR = (tPix ushr 16) and 0xff
-            val tG = (tPix ushr 8) and 0xff
-            val tB = tPix and 0xff
-
-            val newR = (tR * factor).toInt().coerceIn(0, 255)
-            val newG = (tG * factor).toInt().coerceIn(0, 255)
-            val newB = (tB * factor).toInt().coerceIn(0, 255)
-
-            targetPixels[i] = (newA shl 24) or (newR shl 16) or (newG shl 8) or newB
+            if (newA == 0) {
+                targetPixels[i] = 0
+            } else {
+                val tR = (tPix ushr 16) and 0xff
+                val tG = (tPix ushr 8) and 0xff
+                val tB = tPix and 0xff
+                targetPixels[i] = (newA shl 24) or (tR shl 16) or (tG shl 8) or tB
+            }
         }
     }
 
@@ -554,15 +568,14 @@ object CompositorPipeline {
             }
 
             val newA = (tA * factor).toInt().coerceIn(0, 255)
-            val tR = (tPix ushr 16) and 0xff
-            val tG = (tPix ushr 8) and 0xff
-            val tB = tPix and 0xff
-
-            val newR = (tR * factor).toInt().coerceIn(0, 255)
-            val newG = (tG * factor).toInt().coerceIn(0, 255)
-            val newB = (tB * factor).toInt().coerceIn(0, 255)
-
-            targetPixels[i] = (newA shl 24) or (newR shl 16) or (newG shl 8) or newB
+            if (newA == 0) {
+                targetPixels[i] = 0
+            } else {
+                val tR = (tPix ushr 16) and 0xff
+                val tG = (tPix ushr 8) and 0xff
+                val tB = tPix and 0xff
+                targetPixels[i] = (newA shl 24) or (tR shl 16) or (tG shl 8) or tB
+            }
         }
     }
 

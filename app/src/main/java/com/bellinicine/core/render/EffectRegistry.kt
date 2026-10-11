@@ -134,6 +134,7 @@ object EffectRegistry {
 
     fun createEffect(effectId: String, name: String? = null): Effect? {
         val def = registry[effectId] ?: return null
+        if (!EffectProcessor.hasProcessorFor(effectId)) return null
         return Effect(
             id = effectId,
             name = name ?: def.displayName,
@@ -142,4 +143,6 @@ object EffectRegistry {
             parameters = def.defaultParameters
         )
     }
+
+    fun isSupported(effectId: String): Boolean = registry.containsKey(effectId) && EffectProcessor.hasProcessorFor(effectId)
 }

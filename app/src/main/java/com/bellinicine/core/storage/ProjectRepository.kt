@@ -1,9 +1,19 @@
 package com.bellinicine.core.storage
 
 import android.content.Context
+import android.util.Log
 import com.bellinicine.core.model.Project
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.FileOutputStream
 
@@ -15,12 +25,15 @@ data class ProjectSummary(
     val schemaVersion: Int
 )
 
+class UnsupportedSchemaVersionException(message: String) : Exception(message)
+
 /**
  * Handles atomic persistent project storage, schema versioning,
  * automatic crash recovery (.bak backups), and project migrations.
  */
 object ProjectRepository {
 
+    private const val TAG = "ProjectRepository"
     const val CURRENT_SCHEMA_VERSION = 1
 
     val json = Json {
@@ -51,17 +64,21 @@ object ProjectRepository {
         val versionedProject = if (project.version <= 0) project.copy(version = CURRENT_SCHEMA_VERSION) else project
         val content = json.encodeToString(versionedProject)
 
-        // 1. Write fully to temporary file and flush
+        // 1. Write fully to temporary file and flush to disk
         FileOutputStream(tmpFile).use { out ->
             out.write(content.toByteArray(Charsets.UTF_8))
             out.flush()
             out.fd.sync()
         }
 
-        // 2. Backup existing project file
+        // 2. Backup existing project file, or initialize backup from tmp file
         if (file.exists() && file.length() > 0) {
             try {
                 file.copyTo(bakFile, overwrite = true)
+            } catch (_: Exception) {}
+        } else {
+            try {
+                tmpFile.copyTo(bakFile, overwrite = true)
             } catch (_: Exception) {}
         }
 
@@ -105,19 +122,62 @@ object ProjectRepository {
     private fun decodeAndMigrate(file: File): Project? {
         return try {
             val text = file.readText(Charsets.UTF_8)
-            val project = json.decodeFromString<Project>(text)
-            migrateIfNeeded(project)
-        } catch (_: Exception) {
+            decodeAndMigrateString(text)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode project file ${file.name}: ${e.message}")
             null
         }
     }
 
-    private fun migrateIfNeeded(project: Project): Project {
-        if (project.version >= CURRENT_SCHEMA_VERSION) {
-            return project
+    /**
+     * Parses project JSON, enforces supported schema boundaries, and runs version-specific migrations.
+     */
+    fun decodeAndMigrateString(jsonText: String): Project {
+        val rootElement = json.parseToJsonElement(jsonText)
+        if (rootElement !is JsonObject) {
+            throw IllegalArgumentException("Project JSON must be an object")
         }
-        // Run migration pipeline if needed for legacy schema versions
-        return project.copy(version = CURRENT_SCHEMA_VERSION)
+
+        val version = rootElement["version"]?.jsonPrimitive?.intOrNull ?: 0
+        if (version > CURRENT_SCHEMA_VERSION) {
+            throw UnsupportedSchemaVersionException(
+                "Project schema version $version is newer than current supported version $CURRENT_SCHEMA_VERSION."
+            )
+        }
+
+        var currentJson = rootElement
+        if (version == 0) {
+            currentJson = migrateV0ToV1(currentJson)
+        }
+
+        return json.decodeFromJsonElement<Project>(currentJson)
+    }
+
+    /**
+     * Stepwise migration from legacy schema v0 to schema v1:
+     * - Injects explicit schema version
+     * - Populates activeCompositionId if missing
+     * - Ensures assets array exists
+     */
+    fun migrateV0ToV1(v0Obj: JsonObject): JsonObject {
+        val map = v0Obj.toMutableMap()
+        map["version"] = JsonPrimitive(1)
+
+        // Ensure activeCompositionId is set
+        if (!map.containsKey("activeCompositionId")) {
+            val comps = map["compositions"]?.jsonArray
+            val firstId = comps?.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+            if (firstId != null) {
+                map["activeCompositionId"] = JsonPrimitive(firstId)
+            }
+        }
+
+        // Ensure assets list exists
+        if (!map.containsKey("assets")) {
+            map["assets"] = JsonArray(emptyList())
+        }
+
+        return JsonObject(map)
     }
 
     fun listProjects(context: Context): List<String> {

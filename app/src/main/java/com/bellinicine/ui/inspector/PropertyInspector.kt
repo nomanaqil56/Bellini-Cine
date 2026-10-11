@@ -19,6 +19,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -47,8 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bellinicine.core.model.BlendMode
 import com.bellinicine.core.model.EffectCategory
+import com.bellinicine.core.model.EffectParameter
 import com.bellinicine.core.model.Layer
 import com.bellinicine.core.model.TrackMatteType
+import com.bellinicine.core.render.EffectRegistry
 import com.bellinicine.ui.theme.AccentPrimary
 import com.bellinicine.ui.theme.KeyframeAmber
 import com.bellinicine.ui.theme.PanelDark
@@ -67,9 +71,12 @@ fun PropertyInspector(
     onUpdateBlendMode: (BlendMode) -> Unit,
     onUpdateTrackMatte: (TrackMatteType) -> Unit,
     onToggleKeyframing: (String) -> Unit,
-    onAddEffect: (String, EffectCategory) -> Unit,
+    onAddEffect: (String) -> Unit,
     onRemoveEffect: (String) -> Unit,
     onToggleEffect: (String) -> Unit,
+    onUpdateEffectSlider: (String, String, Float) -> Unit = { _, _, _ -> },
+    onUpdateEffectCheckbox: (String, String, Boolean) -> Unit = { _, _, _ -> },
+    onReorderEffect: (Int, Boolean) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     if (selectedLayer == null) {
@@ -243,27 +250,106 @@ fun PropertyInspector(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
             )
         } else {
-            selectedLayer.effects.forEach { effect ->
+            selectedLayer.effects.forEachIndexed { effectIndex, effect ->
                 Card(
                     colors = CardDefaults.cardColors(containerColor = PanelHeader),
                     shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(8.dp)
-                    ) {
-                        Checkbox(
-                            checked = effect.enabled,
-                            onCheckedChange = { onToggleEffect(effect.id) },
-                            colors = CheckboxDefaults.colors(checkedColor = AccentPrimary),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(16.dp).padding(start = 4.dp))
-                        Text(effect.name, fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp))
-                        Spacer(modifier = Modifier.weight(1f))
-                        IconButton(onClick = { onRemoveEffect(effect.id) }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Checkbox(
+                                checked = effect.enabled,
+                                onCheckedChange = { onToggleEffect(effect.id) },
+                                colors = CheckboxDefaults.colors(checkedColor = AccentPrimary),
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(16.dp).padding(start = 4.dp))
+                            Text(effect.name, fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp))
+                            Spacer(modifier = Modifier.weight(1f))
+
+                            IconButton(
+                                onClick = { onReorderEffect(effectIndex, true) },
+                                enabled = effectIndex > 0,
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", tint = if (effectIndex > 0) TextSecondary else TextMuted, modifier = Modifier.size(16.dp))
+                            }
+                            IconButton(
+                                onClick = { onReorderEffect(effectIndex, false) },
+                                enabled = effectIndex < selectedLayer.effects.lastIndex,
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", tint = if (effectIndex < selectedLayer.effects.lastIndex) TextSecondary else TextMuted, modifier = Modifier.size(16.dp))
+                            }
+                            IconButton(onClick = { onRemoveEffect(effect.id) }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                            }
+                        }
+
+                        // Parameter Controls
+                        if (effect.enabled && effect.parameters.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            effect.parameters.forEach { param ->
+                                when (param) {
+                                    is EffectParameter.Slider -> {
+                                        val currentVal = param.property.defaultValue
+                                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(param.name, fontSize = 11.sp, color = TextSecondary)
+                                                Text(String.format(java.util.Locale.US, "%.1f", currentVal), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                            }
+                                            Slider(
+                                                value = currentVal,
+                                                onValueChange = { onUpdateEffectSlider(effect.id, param.name, it) },
+                                                valueRange = param.min..param.max,
+                                                colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                                            )
+                                        }
+                                    }
+                                    is EffectParameter.Angle -> {
+                                        val currentVal = param.property.defaultValue
+                                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(param.name, fontSize = 11.sp, color = TextSecondary)
+                                                Text("${currentVal.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                            }
+                                            Slider(
+                                                value = currentVal,
+                                                onValueChange = { onUpdateEffectSlider(effect.id, param.name, it) },
+                                                valueRange = 0f..360f,
+                                                colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                                            )
+                                        }
+                                    }
+                                    is EffectParameter.Checkbox -> {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(param.name, fontSize = 11.sp, color = TextSecondary)
+                                            Checkbox(
+                                                checked = param.value,
+                                                onCheckedChange = { onUpdateEffectCheckbox(effect.id, param.name, it) },
+                                                colors = CheckboxDefaults.colors(checkedColor = AccentPrimary)
+                                            )
+                                        }
+                                    }
+                                    else -> {}
+                                }
+                            }
                         }
                     }
                 }
@@ -371,8 +457,9 @@ private fun TrackMatteDropdown(currentMatte: TrackMatteType, onSelect: (TrackMat
 }
 
 @Composable
-private fun AddEffectMenu(onAddEffect: (String, EffectCategory) -> Unit) {
+private fun AddEffectMenu(onAddEffect: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
+    val registered = remember { EffectRegistry.getAll() }
 
     Box {
         FilledTonalButton(
@@ -389,34 +476,15 @@ private fun AddEffectMenu(onAddEffect: (String, EffectCategory) -> Unit) {
             expanded = expanded,
             onDismissRequest = { expanded = false }
         ) {
-            DropdownMenuItem(
-                text = { Text("Gaussian Blur") },
-                onClick = {
-                    onAddEffect("Gaussian Blur", EffectCategory.BLUR_AND_SHARPEN)
-                    expanded = false
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Glow & Bloom") },
-                onClick = {
-                    onAddEffect("Glow & Bloom", EffectCategory.STYLIZE)
-                    expanded = false
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Color Curves / Tint") },
-                onClick = {
-                    onAddEffect("Color Curves", EffectCategory.COLOR_CORRECTION)
-                    expanded = false
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Turbulent Displace") },
-                onClick = {
-                    onAddEffect("Turbulent Displace", EffectCategory.DISTORT)
-                    expanded = false
-                }
-            )
+            registered.forEach { def ->
+                DropdownMenuItem(
+                    text = { Text(def.displayName) },
+                    onClick = {
+                        onAddEffect(def.effectId)
+                        expanded = false
+                    }
+                )
+            }
         }
     }
 }
