@@ -36,6 +36,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -224,6 +227,7 @@ class WorkspaceViewModel : ViewModel() {
         )
     }
 
+    private val autosaveMutex = Mutex()
     private var autosaveContext: Context? = null
     private var autosaveJob: Job? = null
 
@@ -231,18 +235,30 @@ class WorkspaceViewModel : ViewModel() {
         this.autosaveContext = context.applicationContext
     }
 
+    /**
+     * Executes non-blocking serialized autosave on Dispatchers.IO.
+     * Guarantees that the newest project state is saved and concurrent writes are synchronized.
+     */
+    suspend fun performSerializedAutosave(context: Context, project: Project): Boolean = withContext(Dispatchers.IO) {
+        autosaveMutex.withLock {
+            try {
+                ProjectRepository.autosaveProject(context, project)
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("WorkspaceViewModel", "Autosave write failed: ${e.message}")
+                false
+            }
+        }
+    }
+
     fun scheduleAutosave(delayMs: Long = 1200L) {
         val ctx = autosaveContext ?: return
         autosaveJob?.cancel()
         autosaveJob = viewModelScope.launch(Dispatchers.IO) {
             delay(delayMs)
-            try {
-                val currentProj = _uiState.value.project
-                val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
-                ProjectRepository.autosaveProject(ctx, projToSave)
-            } catch (e: Exception) {
-                android.util.Log.e("WorkspaceViewModel", "Debounced autosave failed: ${e.message}")
-            }
+            val currentProj = _uiState.value.project
+            val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
+            performSerializedAutosave(ctx, projToSave)
         }
     }
 
@@ -931,14 +947,30 @@ class WorkspaceViewModel : ViewModel() {
         return true
     }
 
-    fun triggerAutosave(context: Context): Boolean {
+    /**
+     * Non-blocking immediate autosave for lifecycle callbacks (ON_PAUSE, ON_STOP, dispose).
+     * Cancels any pending delayed debounced save and serializes file persistence off the main thread.
+     */
+    fun triggerAutosave(context: Context): Job {
+        val currentProj = _uiState.value.project
+        val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
+        autosaveJob?.cancel()
+        return viewModelScope.launch(Dispatchers.IO) {
+            performSerializedAutosave(context, projToSave)
+        }
+    }
+
+    /**
+     * Synchronous autosave for test environments or synchronous teardown checkpoints.
+     */
+    fun triggerAutosaveSync(context: Context): Boolean {
+        val currentProj = _uiState.value.project
+        val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
         return try {
-            val currentProj = _uiState.value.project
-            val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
             ProjectRepository.autosaveProject(context, projToSave)
             true
         } catch (e: Exception) {
-            android.util.Log.e("WorkspaceViewModel", "Autosave failed: ${e.message}")
+            android.util.Log.e("WorkspaceViewModel", "Synchronous autosave failed: ${e.message}")
             false
         }
     }

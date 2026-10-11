@@ -114,4 +114,44 @@ class AutosaveRecoveryTest {
 
         tempDir.deleteRecursively()
     }
+
+    @Test
+    fun repeatedRapidAutosavesSerializedWithoutCorruption() {
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "bellini_test_autosave_rapid_${System.currentTimeMillis()}")
+        tempDir.mkdirs()
+
+        val comp = Composition(
+            id = "comp-rapid",
+            name = "Rapid Edit Comp",
+            layers = listOf(
+                Layer(id = "layer-1", name = "Layer 1", type = LayerType.SOLID, data = LayerData.Solid(0xFF0000FF, 100, 100)),
+                Layer(id = "layer-2", name = "Layer 2", type = LayerType.TEXT, data = LayerData.Text("Hello"))
+            )
+        )
+        val initialProject = Project(
+            id = "proj-rapid",
+            name = "Rapid Project",
+            compositions = listOf(comp)
+        )
+
+        // Simulate 20 rapid successive edits saved in quick succession
+        for (i in 1..20) {
+            val updatedComp = comp.copy(name = "Rapid Edit Comp iteration $i")
+            val updatedProj = initialProject.copy(
+                name = "Rapid Project iteration $i",
+                compositions = listOf(updatedComp)
+            )
+            val file = ProjectRepository.autosaveProjectToDir(tempDir, updatedProj)
+            assertTrue("Autosave file must exist after write $i", file.exists())
+        }
+
+        // Verify final project state is valid and represents the final write
+        val restored = ProjectRepository.loadAutosaveFromDir(tempDir)
+        assertNotNull("Restored project must not be null", restored)
+        assertEquals("Rapid Project iteration 20", restored?.name)
+        assertEquals("Rapid Edit Comp iteration 20", restored?.compositions?.first()?.name)
+        assertEquals(2, restored?.compositions?.first()?.layers?.size)
+
+        tempDir.deleteRecursively()
+    }
 }

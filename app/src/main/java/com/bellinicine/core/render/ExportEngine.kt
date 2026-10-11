@@ -48,21 +48,23 @@ object ExportEngine {
     }
 
     fun selectSupportedColorFormat(codec: MediaCodec, mimeType: String): Int {
-        return try {
-            val capabilities = codec.codecInfo.getCapabilitiesForType(mimeType)
-            val supported = capabilities.colorFormats
-            val preferred = intArrayOf(
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
-            )
-            for (fmt in preferred) {
-                if (supported.contains(fmt)) return fmt
-            }
-            supported.firstOrNull() ?: MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
-        } catch (_: Exception) {
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+        val capabilities = try {
+            codec.codecInfo.getCapabilitiesForType(mimeType)
+        } catch (e: Exception) {
+            throw IllegalStateException("Codec '${codec.name}' failed to query capabilities for $mimeType: ${e.message}", e)
         }
+        val supported = capabilities.colorFormats
+        val preferred = intArrayOf(
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+        )
+        for (fmt in preferred) {
+            if (supported.contains(fmt)) return fmt
+        }
+        throw UnsupportedOperationException(
+            "Codec '${codec.name}' does not support any compatible YUV420 input format (COLOR_FormatYUV420SemiPlanar, COLOR_FormatYUV420Planar, or COLOR_FormatYUV420Flexible). Supported formats: ${supported.contentToString()}"
+        )
     }
 
     suspend fun exportComposition(
@@ -238,6 +240,10 @@ object ExportEngine {
                 }
             }
 
+            if (!eosReceived) {
+                throw IllegalStateException("Encoder failed to acknowledge end of stream (BUFFER_FLAG_END_OF_STREAM) within timeout. Export output is incomplete.")
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Hardware video export failed: ${e.message}", e)
             if (outputFile.exists()) outputFile.delete()
@@ -337,10 +343,15 @@ object ExportEngine {
         }
     }
 
-    fun verifyExportedMp4(file: File): Boolean {
+    fun isAndroidRuntimeEnvironment(): Boolean {
+        val vmName = System.getProperty("java.vm.name") ?: ""
+        return vmName.contains("Dalvik", ignoreCase = true)
+    }
+
+    fun verifyExportedMp4(file: File, isAndroidDeviceRuntime: Boolean = isAndroidRuntimeEnvironment()): Boolean {
         if (!file.exists() || file.length() < 32) return false
 
-        // Verify ISO Base Media "ftyp" box header signature at offset 4
+        // 1. Verify ISO Base Media "ftyp" box header signature at offset 4
         val hasFtyp = try {
             file.inputStream().use { stream ->
                 val header = ByteArray(8)
@@ -353,26 +364,39 @@ object ExportEngine {
         }
         if (!hasFtyp) return false
 
-        // Real-device secondary validation with MediaMetadataRetriever
-        return try {
+        // 2. Comprehensive video playback validation on Android device runtime
+        if (isAndroidDeviceRuntime) {
             val mmr = MediaMetadataRetriever()
-            try {
+            return try {
                 mmr.setDataSource(file.absolutePath)
                 val hasVideo = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
                 val duration = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                if (hasVideo != null || duration > 0) {
-                    hasVideo.equals("yes", ignoreCase = true) || duration > 0
-                } else {
-                    // MediaMetadataRetriever returned null (standard Android stub behavior in JVM unit tests)
-                    true
+                val width = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val height = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                val sampleFrame = try {
+                    mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                } catch (_: Throwable) {
+                    null
                 }
+
+                val isValidVideo = hasVideo.equals("yes", ignoreCase = true) &&
+                        duration > 0 &&
+                        width > 0 &&
+                        height > 0 &&
+                        sampleFrame != null
+
+                sampleFrame?.recycle()
+                isValidVideo
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaMetadataRetriever validation failed: ${e.message}")
+                false
             } finally {
                 try { mmr.release() } catch (_: Exception) {}
             }
-        } catch (_: Throwable) {
-            // If MediaMetadataRetriever throws (e.g. native library missing on JVM), ftyp presence is sufficient
-            true
         }
+
+        // In pure JVM unit test environments where MediaMetadataRetriever stubs return null, ftyp header presence is verified
+        return true
     }
 
     fun convertPixelsToYuv(argb: IntArray, width: Int, height: Int, colorFormat: Int): ByteArray {

@@ -40,6 +40,56 @@ class VideoFrameExtractionTest {
     }
 
     @Test
+    fun computeSourceMediaFrameHandlesDifferingCompositionAndSourceFps() {
+        // 24 fps footage in a 60 fps composition
+        // At 1.0 second in composition: compFrame = 60 (at 60fps). Source should be at 24 frames (at 24fps).
+        val srcFrame = com.bellinicine.core.render.computeSourceMediaFrame(
+            compositionFrame = 60L,
+            compositionFps = 60f,
+            startTimeFrame = 0L,
+            timeStretch = 100f,
+            sourceFps = 24f
+        )
+        assertEquals(24L, srcFrame)
+
+        // At 2.5 seconds: compFrame = 150 (at 60fps). Source frame = 2.5 * 24 = 60.
+        val srcFrame2 = com.bellinicine.core.render.computeSourceMediaFrame(
+            compositionFrame = 150L,
+            compositionFps = 60f,
+            startTimeFrame = 0L,
+            timeStretch = 100f,
+            sourceFps = 24f
+        )
+        assertEquals(60L, srcFrame2)
+    }
+
+    @Test
+    fun computeSourceMediaTimestampHandlesReversePlaybackAndFreezeFrame() {
+        val durationUs = 10_000_000L // 10 seconds source video
+
+        // Freeze frame (timeStretch = 0)
+        val freezeUs = com.bellinicine.core.render.computeSourceMediaTimestampUs(
+            compositionFrame = 90L,
+            compositionFps = 30f,
+            startTimeFrame = 0L,
+            timeStretch = 0f,
+            sourceDurationUs = durationUs
+        )
+        assertEquals("Freeze frame must remain at timestamp 0", 0L, freezeUs)
+
+        // Reverse playback (timeStretch = -100%): at 1 sec into comp (30 frames at 30fps),
+        // playback should be at duration (10s) - 1s = 9s (9,000,000 us)
+        val reverseUs = com.bellinicine.core.render.computeSourceMediaTimestampUs(
+            compositionFrame = 30L,
+            compositionFps = 30f,
+            startTimeFrame = 0L,
+            timeStretch = -100f,
+            sourceDurationUs = durationUs
+        )
+        assertEquals(9_000_000L, reverseUs)
+    }
+
+    @Test
     fun isVideoFileAndIsImageFileDetection() {
         assertTrue(VideoFrameDecoder.isVideoFile("file:///storage/emulated/0/DCIM/video.mp4"))
         assertTrue(VideoFrameDecoder.isVideoFile("content://media/external/video/media/123"))

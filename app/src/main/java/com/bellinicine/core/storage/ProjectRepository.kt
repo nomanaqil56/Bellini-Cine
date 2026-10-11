@@ -215,29 +215,39 @@ object ProjectRepository {
 
     // --- AUTOSAVE & CRASH RECOVERY ---
 
+    private val autosaveLock = Any()
+
     fun autosaveProjectToDir(dir: File, project: Project): File {
-        dir.mkdirs()
-        val file = File(dir, "autosave.json")
-        saveProjectToFile(file, project)
-        return file
+        synchronized(autosaveLock) {
+            dir.mkdirs()
+            val file = File(dir, "autosave.json")
+            saveProjectToFile(file, project)
+            return file
+        }
     }
 
     fun hasAutosaveInDir(dir: File): Boolean {
-        val file = File(dir, "autosave.json")
-        val bak = File(dir, "autosave.json.bak")
-        return (file.exists() && file.length() > 0) || (bak.exists() && bak.length() > 0)
+        synchronized(autosaveLock) {
+            val file = File(dir, "autosave.json")
+            val bak = File(dir, "autosave.json.bak")
+            return (file.exists() && file.length() > 0) || (bak.exists() && bak.length() > 0)
+        }
     }
 
     fun loadAutosaveFromDir(dir: File): Project? {
-        val file = File(dir, "autosave.json")
-        return loadProjectFromFile(file)
+        synchronized(autosaveLock) {
+            val file = File(dir, "autosave.json")
+            return loadProjectFromFile(file)
+        }
     }
 
     fun clearAutosaveInDir(dir: File) {
-        val file = File(dir, "autosave.json")
-        val bak = File(dir, "autosave.json.bak")
-        if (file.exists()) file.delete()
-        if (bak.exists()) bak.delete()
+        synchronized(autosaveLock) {
+            val file = File(dir, "autosave.json")
+            val bak = File(dir, "autosave.json.bak")
+            if (file.exists()) file.delete()
+            if (bak.exists()) bak.delete()
+        }
     }
 
     fun autosaveProject(context: Context, project: Project): File {

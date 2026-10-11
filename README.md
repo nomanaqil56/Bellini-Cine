@@ -18,15 +18,15 @@ Bellini Cine aims to deliver After Effects-grade compositing and motion graphics
 | Subsystem | Status | Details |
 | :--- | :--- | :--- |
 | **Workspace & UI** | ✅ Implemented | Jetpack Compose multi-tab workspace (Timeline, Graph Editor, Effects Library, Project Assets, Render Queue), Property Inspector, Canvas Viewport. |
-| **Project Persistence** | ✅ Implemented & Verified | Multi-composition atomic JSON persistence with `.bak` crash recovery, schema versioning (`v0 -> v1` migrations), debounced & lifecycle-triggered autosave. |
-| **Software Compositor** | ✅ Implemented & Verified | Skia Android Canvas software pipeline with affine 2D transform cascades ($M_{world} = M_{parent} \times M_{local}$), vector masks, and straight-color track mattes. |
-| **Track Mattes** | ✅ Implemented & Verified | Offscreen Alpha, Alpha Inverted, Luma, and Luma Inverted mattes using ITU-R BT.709 coefficients and straight color preservation. |
-| **Effect Pipeline** | ✅ Implemented & Verified | Central `EffectRegistry` with 7 registered pixel effects: Fast Gaussian Blur, Glow (with Threshold isolation), Brightness/Contrast, Tint, Invert, Hue/Saturation (Euler matrix), Solid Composite. |
+| **Project Persistence** | ✅ Implemented & Unit-Tested | Multi-composition atomic JSON persistence with `.bak` crash recovery, schema versioning (`v0 -> v1` migrations), debounced & lifecycle-triggered non-blocking autosave. |
+| **Software Compositor** | ✅ Implemented & Unit-Tested | Skia Android Canvas software pipeline with affine 2D transform cascades ($M_{world} = M_{parent} \times M_{local}$), vector masks, and straight-color track mattes. Primary authoritative renderer. |
+| **Track Mattes** | ✅ Implemented & Unit-Tested | Offscreen Alpha, Alpha Inverted, Luma, and Luma Inverted mattes using ITU-R BT.709 coefficients and straight color preservation. |
+| **Effect Pipeline** | ✅ Implemented & Unit-Tested | Central `EffectRegistry` with 7 registered pixel effects: Fast Gaussian Blur, Glow (with Threshold isolation), Brightness/Contrast, Tint, Invert, Hue/Saturation (Euler matrix), Solid Composite. Rejects unknown effects. |
 | **Media Import (SAF)** | ✅ Implemented | Storage Access Framework (`content://` URI) document picker, persistable URI permissions, project media bin, footage relinking, missing media alerts. |
-| **Video Decoding** | 🟡 Partially Implemented | `MediaMetadataRetriever` extraction with bounded 64 MB LRU cache, hardware rotation handling, and time-stretch mapping (`OPTION_CLOSEST`). Exact frame-accurate NDK decoding is planned. |
-| **Video Export** | ✅ Implemented | `MediaCodec` H.264 MP4 export with color format negotiation (NV12 / I420), Image plane-aware feeding, backpressure draining, guaranteed EOS, and MP4 container verification. |
+| **Video Decoding** | 🟡 Partially Implemented | `MediaMetadataRetriever` extraction with bounded 64 MB LRU cache, hardware rotation handling, and time-stretch/reverse mapping (`OPTION_CLOSEST`). Exact frame-accurate NDK decoding is planned. |
+| **Video Export** | 🟡 Partially Implemented | `MediaCodec` H.264 MP4 export with strict color negotiation (NV12 / I420), plane-aware buffer feeding, backpressure draining, guaranteed EOS acknowledgment, and container/playback validation. Physical device verification pending. |
 | **Expression Engine** | 🟡 Partially Implemented | Recursive-descent expression parser supporting basic mathematical expressions, `time`, `wiggle()`, `linear()`, `ease()`, `loopOut()`. Complete JS runtime is planned. |
-| **GPU Compositor** | 🟡 Scaffolded | Experimental OpenGL ES 3.2 FBO shaders and `GlRenderer` scaffolded for solids and background compositing; primary rendering currently authoritative through software pipeline. |
+| **GPU Compositor** | 🟡 Scaffolded | Experimental OpenGL ES 3.2 FBO shaders and `GlRenderer` scaffolded for solids and background compositing; primary composition rendering authoritative through software pipeline. |
 | **3D Scene Graph** | ⚪ Planned | 3D layer models, Camera, and Light data structures defined; true 3D projection, depth sorting, and GLTF mesh import scheduled for Phase 7. |
 | **Audio Engine** | ⚪ Planned | Audio layer models defined; waveform visualization, multi-track mixing, and muxed audio export scheduled for Phase 6. |
 

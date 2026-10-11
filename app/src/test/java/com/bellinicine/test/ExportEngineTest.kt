@@ -62,7 +62,8 @@ class ExportEngineTest {
             out.write(header)
         }
 
-        assertTrue("File with valid ftyp header must pass container verification", ExportEngine.verifyExportedMp4(validFile))
+        assertTrue("File with valid ftyp header must pass container verification", ExportEngine.verifyExportedMp4(validFile, isAndroidDeviceRuntime = false))
+        assertFalse("Header-only file without decodable video stream must fail Android runtime verification", ExportEngine.verifyExportedMp4(validFile, isAndroidDeviceRuntime = true))
 
         // Empty file
         val emptyFile = File(tempDir, "empty.mp4").apply { writeBytes(ByteArray(0)) }

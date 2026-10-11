@@ -278,7 +278,7 @@ object VideoFrameDecoder : VideoFrameProvider {
 
 /**
  * Calculates deterministic source media timestamp in microseconds based on composition time,
- * source in/out offsets, and time-stretching percentages (e.g. 50% = 2x fast, 200% = 0.5x slow).
+ * source in/out offsets, and time-stretching percentages (e.g. 50% = 2x fast, 200% = 0.5x slow, -100% = reverse).
  */
 fun computeSourceMediaTimestampUs(
     compositionFrame: Long,
@@ -289,12 +289,29 @@ fun computeSourceMediaTimestampUs(
 ): Long {
     val compFpsSafe = compositionFps.coerceAtLeast(1f)
     val compTimeSec = (compositionFrame - startTimeFrame).toDouble() / compFpsSafe
-    val stretch = if (timeStretch != 0f) timeStretch / 100.0 else 1.0
 
+    // Freeze frame
+    if (timeStretch == 0f) {
+        return 0L
+    }
+
+    // Reverse playback support (negative time stretch e.g. -100%)
+    if (timeStretch < 0f) {
+        val absStretch = -timeStretch / 100.0
+        val elapsedSec = compTimeSec / absStretch
+        val elapsedUs = (elapsedSec * 1_000_000.0).toLong()
+        return if (sourceDurationUs > 0L) {
+            (sourceDurationUs - elapsedUs).coerceIn(0L, sourceDurationUs)
+        } else {
+            0L
+        }
+    }
+
+    val stretch = timeStretch / 100.0
     val sourceTimeSec = compTimeSec / stretch
     var sourceTimeUs = (sourceTimeSec * 1_000_000.0).toLong()
 
-    if (sourceDurationUs > 0) {
+    if (sourceDurationUs > 0L) {
         sourceTimeUs = sourceTimeUs.coerceIn(0L, sourceDurationUs)
     } else {
         sourceTimeUs = sourceTimeUs.coerceAtLeast(0L)
@@ -316,8 +333,25 @@ fun computeSourceMediaFrame(
     val compFpsSafe = compositionFps.coerceAtLeast(1f)
     val srcFpsSafe = sourceFps.coerceAtLeast(1f)
     val compTimeSec = (compositionFrame - startTimeFrame).toDouble() / compFpsSafe
-    val stretch = if (timeStretch != 0f) timeStretch / 100.0 else 1.0
 
+    // Freeze frame
+    if (timeStretch == 0f) {
+        return 0L
+    }
+
+    // Reverse playback support
+    if (timeStretch < 0f) {
+        val absStretch = -timeStretch / 100.0
+        val elapsedSec = compTimeSec / absStretch
+        val elapsedFrames = (elapsedSec * srcFpsSafe).toLong()
+        return if (sourceDurationFrames < Long.MAX_VALUE) {
+            (sourceDurationFrames - elapsedFrames).coerceIn(0L, sourceDurationFrames)
+        } else {
+            0L
+        }
+    }
+
+    val stretch = timeStretch / 100.0
     val sourceTimeSec = compTimeSec / stretch
     val frame = (sourceTimeSec * srcFpsSafe).toLong()
     return frame.coerceIn(0L, sourceDurationFrames.coerceAtLeast(0L))

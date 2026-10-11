@@ -124,5 +124,82 @@ class EffectIntegrationTest {
         vm.addEffectToSelectedLayer("Completely Unknown 3D Particle Flare", EffectCategory.STYLIZE)
         assertEquals("Unsupported or unregistered effect: Completely Unknown 3D Particle Flare", vm.uiState.value.statusMessage)
     }
+
+    @Test
+    fun invertEffectInvertsColorAndAlphaChannelsCorrectly() {
+        // Red pixel: A=255, R=255, G=0, B=0
+        val redPixel = (255 shl 24) or (255 shl 16)
+        val invertedRgb = EffectProcessor.applyInvertPixels(intArrayOf(redPixel), invertRgb = true, invertAlpha = false)
+        val r = (invertedRgb[0] ushr 16) and 0xff
+        val g = (invertedRgb[0] ushr 8) and 0xff
+        val b = invertedRgb[0] and 0xff
+        val a = (invertedRgb[0] ushr 24) and 0xff
+        assertEquals("Red inverted must be 0", 0, r)
+        assertEquals("Green inverted must be 255", 255, g)
+        assertEquals("Blue inverted must be 255", 255, b)
+        assertEquals("Alpha preserved", 255, a)
+
+        // Semi-transparent pixel: A=100
+        val semiTransparent = (100 shl 24) or (128 shl 16)
+        val invertedAlpha = EffectProcessor.applyInvertPixels(intArrayOf(semiTransparent), invertRgb = false, invertAlpha = true)
+        val invA = (invertedAlpha[0] ushr 24) and 0xff
+        assertEquals("Alpha inverted (255 - 100) must be 155", 155, invA)
+    }
+
+    @Test
+    fun tintEffectInterpolatesBetweenMapBlackAndMapWhite() {
+        // Pure black pixel (luma 0) and pure white pixel (luma 255)
+        val blackPixel = (255 shl 24) or 0
+        val whitePixel = (255 shl 24) or (255 shl 16) or (255 shl 8) or 255
+
+        // Map black to Red (0xFFFF0000), white to Blue (0xFF0000FF), amount = 100%
+        val mapBlackTo = 0xFFFF0000L
+        val mapWhiteTo = 0xFF0000FFL
+        val tinted = EffectProcessor.applyTintPixels(intArrayOf(blackPixel, whitePixel), mapBlackTo, mapWhiteTo, 1.0f)
+
+        val tintedBlackR = (tinted[0] ushr 16) and 0xff
+        val tintedBlackB = tinted[0] and 0xff
+        assertEquals("Black mapped to red must have R=255", 255, tintedBlackR)
+        assertEquals("Black mapped to red must have B=0", 0, tintedBlackB)
+
+        val tintedWhiteR = (tinted[1] ushr 16) and 0xff
+        val tintedWhiteB = tinted[1] and 0xff
+        assertEquals("White mapped to blue must have R=0", 0, tintedWhiteR)
+        assertEquals("White mapped to blue must have B=255", 255, tintedWhiteB)
+    }
+
+    @Test
+    fun brightnessContrastAdjustsDynamicRangeAndLevels() {
+        val midGray = (255 shl 24) or (128 shl 16) or (128 shl 8) or 128
+        // Increase brightness by +20
+        val brightened = EffectProcessor.applyBrightnessContrastPixels(intArrayOf(midGray), brightness = 20f, contrast = 0f)
+        val brightR = (brightened[0] ushr 16) and 0xff
+        assertTrue("Brightened pixel value must be greater than original 128", brightR > 128)
+
+        // Decrease brightness by -20
+        val darkened = EffectProcessor.applyBrightnessContrastPixels(intArrayOf(midGray), brightness = -20f, contrast = 0f)
+        val darkR = (darkened[0] ushr 16) and 0xff
+        assertTrue("Darkened pixel value must be less than original 128", darkR < 128)
+    }
+
+    @Test
+    fun solidCompositeBlendsOverSolidBackground() {
+        // Transparent pixel (A=0)
+        val transparentPix = 0
+        // Composite over pure blue solid (0xFF0000FF) with 100% opacity
+        val composited = EffectProcessor.applySolidCompositePixels(intArrayOf(transparentPix), solidColor = 0xFF0000FFL, opacity = 1.0f)
+        val compA = (composited[0] ushr 24) and 0xff
+        val compB = composited[0] and 0xff
+        assertEquals("Composited background alpha must be 255", 255, compA)
+        assertEquals("Composited background blue must be 255", 255, compB)
+
+        // Fully opaque red pixel (A=255, R=255) over blue solid: should remain pure red
+        val opaqueRed = (255 shl 24) or (255 shl 16)
+        val overSolid = EffectProcessor.applySolidCompositePixels(intArrayOf(opaqueRed), solidColor = 0xFF0000FFL, opacity = 1.0f)
+        val overR = (overSolid[0] ushr 16) and 0xff
+        val overB = overSolid[0] and 0xff
+        assertEquals("Opaque foreground red must be 255", 255, overR)
+        assertEquals("Opaque foreground blue must be 0", 0, overB)
+    }
 }
 

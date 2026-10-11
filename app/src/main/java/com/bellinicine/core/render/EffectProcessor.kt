@@ -195,18 +195,8 @@ object EffectProcessor {
         return out
     }
 
-    private fun applyTint(
-        input: Bitmap,
-        blackColor: Long,
-        whiteColor: Long,
-        amount: Float
-    ): Bitmap {
-        val w = input.width
-        val h = input.height
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val pix = IntArray(w * h)
-        input.getPixels(pix, 0, w, 0, 0, w, h)
-
+    fun applyTintPixels(pix: IntArray, blackColor: Long, whiteColor: Long, amount: Float): IntArray {
+        val out = pix.copyOf()
         val bR = (blackColor ushr 16 and 0xff).toInt()
         val bG = (blackColor ushr 8 and 0xff).toInt()
         val bB = (blackColor and 0xff).toInt()
@@ -215,8 +205,8 @@ object EffectProcessor {
         val wG = (whiteColor ushr 8 and 0xff).toInt()
         val wB = (whiteColor and 0xff).toInt()
 
-        for (i in 0 until (w * h)) {
-            val p = pix[i]
+        for (i in out.indices) {
+            val p = out[i]
             val a = (p ushr 24) and 0xff
             if (a == 0) continue
 
@@ -237,10 +227,90 @@ object EffectProcessor {
             val finalG = (g * (1f - amount) + tintedG * amount).toInt().coerceIn(0, 255)
             val finalB = (b * (1f - amount) + tintedB * amount).toInt().coerceIn(0, 255)
 
-            pix[i] = (a shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
+            out[i] = (a shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
         }
+        return out
+    }
 
-        out.setPixels(pix, 0, w, 0, 0, w, h)
+    fun applyInvertPixels(pix: IntArray, invertRgb: Boolean, invertAlpha: Boolean): IntArray {
+        val out = pix.copyOf()
+        for (i in out.indices) {
+            val p = out[i]
+            val a = (p ushr 24) and 0xff
+            val r = (p ushr 16) and 0xff
+            val g = (p ushr 8) and 0xff
+            val b = p and 0xff
+
+            val finalA = if (invertAlpha) 255 - a else a
+            val finalR = if (invertRgb) 255 - r else r
+            val finalG = if (invertRgb) 255 - g else g
+            val finalB = if (invertRgb) 255 - b else b
+
+            out[i] = (finalA shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
+        }
+        return out
+    }
+
+    fun applyBrightnessContrastPixels(pix: IntArray, brightness: Float, contrast: Float): IntArray {
+        val out = pix.copyOf()
+        val scale = ((contrast + 100f) / 100f).coerceAtLeast(0f)
+        val translate = (brightness * 2.55f) + 128f * (1f - scale)
+
+        for (i in out.indices) {
+            val p = out[i]
+            val a = (p ushr 24) and 0xff
+            val r = (p ushr 16) and 0xff
+            val g = (p ushr 8) and 0xff
+            val b = p and 0xff
+
+            val finalR = (r * scale + translate).toInt().coerceIn(0, 255)
+            val finalG = (g * scale + translate).toInt().coerceIn(0, 255)
+            val finalB = (b * scale + translate).toInt().coerceIn(0, 255)
+
+            out[i] = (a shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
+        }
+        return out
+    }
+
+    fun applySolidCompositePixels(pix: IntArray, solidColor: Long, opacity: Float): IntArray {
+        val out = pix.copyOf()
+        val solidA = ((solidColor ushr 24 and 0xff) * opacity.coerceIn(0f, 1f)).toInt().coerceIn(0, 255)
+        val solidR = (solidColor ushr 16 and 0xff).toInt()
+        val solidG = (solidColor ushr 8 and 0xff).toInt()
+        val solidB = (solidColor and 0xff).toInt()
+
+        for (i in out.indices) {
+            val p = out[i]
+            val fgA = (p ushr 24) and 0xff
+            val fgR = (p ushr 16) and 0xff
+            val fgG = (p ushr 8) and 0xff
+            val fgB = p and 0xff
+
+            // Source-Over compositing over solid background
+            val alphaFactor = (255 - fgA).toFloat() / 255f
+            val finalA = (fgA + solidA * alphaFactor).toInt().coerceIn(0, 255)
+            val finalR = (fgR + (solidR * (solidA.toFloat() / 255f) * alphaFactor)).toInt().coerceIn(0, 255)
+            val finalG = (fgG + (solidG * (solidA.toFloat() / 255f) * alphaFactor)).toInt().coerceIn(0, 255)
+            val finalB = (fgB + (solidB * (solidA.toFloat() / 255f) * alphaFactor)).toInt().coerceIn(0, 255)
+
+            out[i] = (finalA shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
+        }
+        return out
+    }
+
+    private fun applyTint(
+        input: Bitmap,
+        blackColor: Long,
+        whiteColor: Long,
+        amount: Float
+    ): Bitmap {
+        val w = input.width
+        val h = input.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val pix = IntArray(w * h)
+        input.getPixels(pix, 0, w, 0, 0, w, h)
+        val tinted = applyTintPixels(pix, blackColor, whiteColor, amount)
+        out.setPixels(tinted, 0, w, 0, 0, w, h)
         return out
     }
 
