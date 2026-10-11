@@ -215,29 +215,48 @@ object ProjectRepository {
 
     // --- AUTOSAVE & CRASH RECOVERY ---
 
-    fun autosaveProject(context: Context, project: Project): File {
-        val dir = File(context.filesDir, "projects").apply { mkdirs() }
+    fun autosaveProjectToDir(dir: File, project: Project): File {
+        dir.mkdirs()
         val file = File(dir, "autosave.json")
         saveProjectToFile(file, project)
         return file
     }
 
-    fun hasAutosave(context: Context): Boolean {
-        val file = File(File(context.filesDir, "projects"), "autosave.json")
-        val bak = File(File(context.filesDir, "projects"), "autosave.json.bak")
+    fun hasAutosaveInDir(dir: File): Boolean {
+        val file = File(dir, "autosave.json")
+        val bak = File(dir, "autosave.json.bak")
         return (file.exists() && file.length() > 0) || (bak.exists() && bak.length() > 0)
     }
 
-    fun loadAutosave(context: Context): Project? {
-        val file = File(File(context.filesDir, "projects"), "autosave.json")
+    fun loadAutosaveFromDir(dir: File): Project? {
+        val file = File(dir, "autosave.json")
         return loadProjectFromFile(file)
     }
 
-    fun clearAutosave(context: Context) {
-        val dir = File(context.filesDir, "projects")
+    fun clearAutosaveInDir(dir: File) {
         val file = File(dir, "autosave.json")
         val bak = File(dir, "autosave.json.bak")
         if (file.exists()) file.delete()
         if (bak.exists()) bak.delete()
+    }
+
+    fun autosaveProject(context: Context, project: Project): File {
+        val dir = File(context.filesDir, "projects")
+        return autosaveProjectToDir(dir, project)
+    }
+
+    fun hasAutosave(context: Context): Boolean {
+        val dir = File(context.filesDir, "projects")
+        return hasAutosaveInDir(dir)
+    }
+
+    fun loadAutosave(context: Context): Project? {
+        val dir = File(context.filesDir, "projects")
+        return loadAutosaveFromDir(dir)
+    }
+
+    fun clearAutosave(context: Context) {
+        val dir = File(context.filesDir, "projects")
+        clearAutosaveInDir(dir)
     }
 }

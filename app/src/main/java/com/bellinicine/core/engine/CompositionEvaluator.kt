@@ -31,10 +31,21 @@ object CompositionEvaluator {
         val seconds = composition.frameToSeconds(frame)
         val hasSoloLayers = composition.layers.any { it.isSolo }
 
-        // Filter active layers according to visibility, solo, and in/out points
-        val activeLayers = composition.layers.filter { layer ->
+        // Track layers that act as mattes for an active target layer
+        val isMatteForActiveLayer = BooleanArray(composition.layers.size)
+        for (i in 1 until composition.layers.size) {
+            val target = composition.layers[i]
+            if (target.trackMatteType != com.bellinicine.core.model.TrackMatteType.NONE && target.isActiveAtFrame(frame)) {
+                isMatteForActiveLayer[i - 1] = true
+            }
+        }
+
+        // Filter active layers according to visibility, solo, in/out points, or track matte role
+        val activeLayers = composition.layers.filterIndexed { index, layer ->
             val soloMatch = !hasSoloLayers || layer.isSolo
-            layer.isActiveAtFrame(frame) && soloMatch
+            val inTimeBounds = frame >= layer.inPointFrame && frame < layer.outPointFrame
+            val isMatte = isMatteForActiveLayer[index] && inTimeBounds
+            (layer.isActiveAtFrame(frame) && soloMatch) || isMatte
         }
 
         val layerMap = composition.layers.associateBy { it.id }

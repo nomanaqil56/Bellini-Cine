@@ -7,6 +7,7 @@ import com.bellinicine.core.model.LayerType
 import com.bellinicine.core.model.TrackMatteType
 import com.bellinicine.core.render.CompositorPipeline
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -92,4 +93,65 @@ class CompositorTrackMatteIntegrationTest {
         assertEquals(255, getA(targetBlack[0]))
         assertEquals(255, getR(targetBlack[0]))
     }
+
+    @Test
+    fun compositionEvaluatesHiddenMatteLayerForActiveTarget() {
+        // In After Effects, when a layer is designated as a track matte, its standalone
+        // visibility eyeball is turned off, but it MUST still be evaluated to composite the target layer!
+        val matteLayer = Layer(
+            id = "layer-matte",
+            name = "Matte Circle",
+            type = LayerType.SOLID,
+            data = LayerData.Solid(0xFFFFFFFF, 100, 100),
+            isVisible = false // Standalone visibility eye toggled off
+        )
+
+        val targetLayer = Layer(
+            id = "layer-target",
+            name = "Target Fill",
+            type = LayerType.SOLID,
+            data = LayerData.Solid(0xFFFF0000, 100, 100),
+            trackMatteType = TrackMatteType.ALPHA,
+            isVisible = true
+        )
+
+        val comp = Composition(
+            id = "comp-matte-test",
+            name = "Matte Comp",
+            layers = listOf(matteLayer, targetLayer)
+        )
+
+        val evaluated = com.bellinicine.core.engine.CompositionEvaluator.evaluateComposition(comp, 0L)
+        assertEquals("Both matte and target layers must be evaluated for track matte compositing", 2, evaluated.size)
+        assertEquals("layer-matte", evaluated[0].layer.id)
+        assertEquals("layer-target", evaluated[1].layer.id)
+    }
+
+    @Test
+    fun endToEndCompositionRendersTrackMatteCorrectly() {
+        val w = 50
+        val h = 50
+        // Target: 50x50 pure red
+        val targetPixels = IntArray(w * h) { makeArgb(255, 255, 0, 0) }
+        // Matte: 50x50 white box with transparent border
+        val mattePixels = IntArray(w * h) { idx ->
+            val x = idx % w
+            val y = idx / w
+            if (x in 10..39 && y in 10..39) makeArgb(255, 255, 255, 255) else 0
+        }
+
+        CompositorPipeline.applyAlphaMattePixels(targetPixels, mattePixels, targetPixels.size, inverted = false)
+
+        // Center pixel should be red with alpha = 255
+        val centerPix = targetPixels[(h / 2) * w + (w / 2)]
+        val centerA = getA(centerPix)
+        val centerR = getR(centerPix)
+        assertEquals("Alpha channel of matted target within matte box should be fully opaque", 255, centerA)
+        assertEquals("Red channel of matted target should be 255", 255, centerR)
+
+        // Corner pixel outside matte should have alpha = 0
+        val cornerPix = targetPixels[0]
+        assertEquals("Alpha channel of matted target outside matte box should be 0", 0, getA(cornerPix))
+    }
 }
+

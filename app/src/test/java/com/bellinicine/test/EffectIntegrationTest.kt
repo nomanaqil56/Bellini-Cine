@@ -87,4 +87,42 @@ class EffectIntegrationTest {
         val mutatedSlider = mutatedEffect.parameters.filterIsInstance<EffectParameter.Slider>().first { it.name == "Radius" }
         assertEquals(42f, mutatedSlider.property.defaultValue, 0.001f)
     }
+
+    @Test
+    fun glowThresholdIsolatesPixelsAboveLuminance() {
+        val w = 2
+        val h = 1
+        // Create 2 pixels: Left is dark (RGB=50,50,50), Right is bright (RGB=220,220,220)
+        val darkColor = (255 shl 24) or (50 shl 16) or (50 shl 8) or 50
+        val brightColor = (255 shl 24) or (220 shl 16) or (220 shl 8) or 220
+        val inputPixels = intArrayOf(darkColor, brightColor)
+
+        // With threshold = 0.5 (128), dark pixel should be zeroed out, bright pixel should remain
+        val isolatedPixels = EffectProcessor.isolateThresholdPixels(inputPixels, 0.5f)
+
+        assertEquals("Dark pixel below threshold must be zeroed out", 0, isolatedPixels[0])
+        val brightAlpha = (isolatedPixels[1] ushr 24) and 0xff
+        assertTrue("Bright pixel above threshold must have non-zero alpha", brightAlpha > 0)
+    }
+
+    @Test
+    fun hueRotationMatrixTransformsColorChannels() {
+        // 0 degrees should produce identity matrix
+        val array0 = EffectProcessor.createHueRotationMatrixArray(0f)
+        assertEquals(1f, array0[0], 0.001f) // a00 = 1
+        assertEquals(0f, array0[1], 0.001f) // a01 = 0
+        assertEquals(0f, array0[2], 0.001f) // a02 = 0
+
+        // 180 degrees should produce non-identity transformation
+        val array180 = EffectProcessor.createHueRotationMatrixArray(180f)
+        assertFalse("180 degree hue rotation must not be identity", array180[0] == 1f && array180[1] == 0f)
+    }
+
+    @Test
+    fun unknownEffectIsRejectedWithoutBecomingFastBlur() {
+        val vm = com.bellinicine.ui.workspace.WorkspaceViewModel()
+        vm.addEffectToSelectedLayer("Completely Unknown 3D Particle Flare", EffectCategory.STYLIZE)
+        assertEquals("Unsupported or unregistered effect: Completely Unknown 3D Particle Flare", vm.uiState.value.statusMessage)
+    }
 }
+

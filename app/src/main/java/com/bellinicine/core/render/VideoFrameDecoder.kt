@@ -162,12 +162,11 @@ object VideoFrameDecoder : VideoFrameProvider {
         }
     }
 
-    override fun getFrame(
+    fun getFrameAtTimeUs(
         mediaUri: String,
-        frameNumber: Long,
-        fps: Float,
-        targetWidth: Int,
-        targetHeight: Int
+        timeUs: Long,
+        targetWidth: Int = 0,
+        targetHeight: Int = 0
     ): Bitmap? {
         val ctx = appContext
         val isContent = mediaUri.startsWith("content://")
@@ -177,7 +176,7 @@ object VideoFrameDecoder : VideoFrameProvider {
         }
 
         val isVideo = isVideoFile(mediaUri) || (!isImageFile(mediaUri) && isContent)
-        val cacheKey = if (isVideo) "$mediaUri#$frameNumber" else mediaUri
+        val cacheKey = if (isVideo) "$mediaUri@$timeUs" else mediaUri
 
         synchronized(frameCache) {
             frameCache.get(cacheKey)?.let { return it }
@@ -186,8 +185,9 @@ object VideoFrameDecoder : VideoFrameProvider {
         return try {
             if (isVideo) {
                 val retriever = getOrCreateRetriever(ctx, mediaUri) ?: return null
-                val timeUs = ((frameNumber.toDouble() / fps.coerceAtLeast(1f)) * 1_000_000.0).toLong()
                 val rawBitmap = synchronized(retriever) {
+                    // Note: MediaMetadataRetriever.OPTION_CLOSEST retrieves the nearest keyframe or decoded frame.
+                    // Frame-accurate sample-by-sample scrubbing across long GOP/VFR streams is planned via NDK MediaCodec.
                     retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
                 }
                 val meta = getMetadata(ctx, mediaUri)
@@ -221,9 +221,20 @@ object VideoFrameDecoder : VideoFrameProvider {
                 bitmap
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decode frame $frameNumber for $mediaUri: ${e.message}")
+            Log.e(TAG, "Failed to decode frame at $timeUs us for $mediaUri: ${e.message}")
             null
         }
+    }
+
+    override fun getFrame(
+        mediaUri: String,
+        frameNumber: Long,
+        fps: Float,
+        targetWidth: Int,
+        targetHeight: Int
+    ): Bitmap? {
+        val timeUs = ((frameNumber.toDouble() / fps.coerceAtLeast(1f)) * 1_000_000.0).toLong()
+        return getFrameAtTimeUs(mediaUri, timeUs, targetWidth, targetHeight)
     }
 
     private fun getOrCreateRetriever(context: Context?, mediaUri: String): MediaMetadataRetriever? {
@@ -264,3 +275,51 @@ object VideoFrameDecoder : VideoFrameProvider {
         metadataCache.clear()
     }
 }
+
+/**
+ * Calculates deterministic source media timestamp in microseconds based on composition time,
+ * source in/out offsets, and time-stretching percentages (e.g. 50% = 2x fast, 200% = 0.5x slow).
+ */
+fun computeSourceMediaTimestampUs(
+    compositionFrame: Long,
+    compositionFps: Float,
+    startTimeFrame: Long,
+    timeStretch: Float,
+    sourceDurationUs: Long = 0L
+): Long {
+    val compFpsSafe = compositionFps.coerceAtLeast(1f)
+    val compTimeSec = (compositionFrame - startTimeFrame).toDouble() / compFpsSafe
+    val stretch = if (timeStretch != 0f) timeStretch / 100.0 else 1.0
+
+    val sourceTimeSec = compTimeSec / stretch
+    var sourceTimeUs = (sourceTimeSec * 1_000_000.0).toLong()
+
+    if (sourceDurationUs > 0) {
+        sourceTimeUs = sourceTimeUs.coerceIn(0L, sourceDurationUs)
+    } else {
+        sourceTimeUs = sourceTimeUs.coerceAtLeast(0L)
+    }
+    return sourceTimeUs
+}
+
+/**
+ * Maps composition frames to source media frame numbers taking both composition and source frame rates into account.
+ */
+fun computeSourceMediaFrame(
+    compositionFrame: Long,
+    compositionFps: Float,
+    startTimeFrame: Long,
+    timeStretch: Float,
+    sourceFps: Float = 30f,
+    sourceDurationFrames: Long = Long.MAX_VALUE
+): Long {
+    val compFpsSafe = compositionFps.coerceAtLeast(1f)
+    val srcFpsSafe = sourceFps.coerceAtLeast(1f)
+    val compTimeSec = (compositionFrame - startTimeFrame).toDouble() / compFpsSafe
+    val stretch = if (timeStretch != 0f) timeStretch / 100.0 else 1.0
+
+    val sourceTimeSec = compTimeSec / stretch
+    val frame = (sourceTimeSec * srcFpsSafe).toLong()
+    return frame.coerceIn(0L, sourceDurationFrames.coerceAtLeast(0L))
+}
+

@@ -66,7 +66,7 @@ object CompositorPipeline {
 
         canvas.save()
         canvas.scale(scaleX, scaleY)
-        renderEvaluatedLayers(canvas, evaluatedLayers, frame, composition.frameRate)
+        renderEvaluatedLayers(canvas, evaluatedLayers, frame, composition.frameRate, composition.width, composition.height)
         canvas.restore()
 
         return bitmap
@@ -80,7 +80,9 @@ object CompositorPipeline {
         canvas: Canvas,
         evaluatedLayers: List<EvaluatedLayer>,
         frame: Long = 0L,
-        fps: Float = 30f
+        fps: Float = 30f,
+        bufferWidth: Int = 0,
+        bufferHeight: Int = 0
     ) {
         val consumedAsMatte = BooleanArray(evaluatedLayers.size)
         for (i in evaluatedLayers.indices) {
@@ -91,8 +93,8 @@ object CompositorPipeline {
         }
 
         val clip = canvas.clipBounds
-        val bufferW = if (clip != null && clip.width() > 0) clip.width() else 1920
-        val bufferH = if (clip != null && clip.height() > 0) clip.height() else 1080
+        val bufferW = if (bufferWidth > 0) bufferWidth else if (clip != null && clip.width() > 0) clip.width() else 1920
+        val bufferH = if (bufferHeight > 0) bufferHeight else if (clip != null && clip.height() > 0) clip.height() else 1080
 
         for (i in evaluatedLayers.indices) {
             if (consumedAsMatte[i]) continue
@@ -343,13 +345,27 @@ object CompositorPipeline {
 
     fun computeSourceMediaFrame(
         compositionFrame: Long,
+        compositionFps: Float,
+        startTimeFrame: Long,
+        timeStretch: Float,
+        sourceFps: Float = 30f
+    ): Long {
+        val compFpsSafe = compositionFps.coerceAtLeast(1f)
+        val srcFpsSafe = sourceFps.coerceAtLeast(1f)
+        val compTimeSec = (compositionFrame - startTimeFrame).toDouble() / compFpsSafe
+        val stretch = if (timeStretch != 0f) timeStretch / 100.0 else 1.0
+
+        val sourceTimeSec = compTimeSec / stretch
+        val frame = (sourceTimeSec * srcFpsSafe).toLong()
+        return frame.coerceAtLeast(0L)
+    }
+
+    fun computeSourceMediaFrame(
+        compositionFrame: Long,
         startTimeFrame: Long,
         timeStretch: Float
     ): Long {
-        val relativeFrame = compositionFrame - startTimeFrame
-        val stretchFactor = if (timeStretch != 0f) timeStretch / 100f else 1f
-        val mediaFrame = (relativeFrame / stretchFactor).toLong()
-        return mediaFrame.coerceAtLeast(0L)
+        return computeSourceMediaFrame(compositionFrame, 30f, startTimeFrame, timeStretch, 30f)
     }
 
     private fun renderFootage(
@@ -361,11 +377,13 @@ object CompositorPipeline {
         frame: Long,
         fps: Float
     ) {
-        val sourceFrame = computeSourceMediaFrame(frame, layer.startTimeFrame, layer.timeStretch)
+        val meta = videoFrameProvider.getMetadata(footage.mediaUri)
+        val sourceFps = if (meta != null && meta.frameRate > 0) meta.frameRate else 30f
+        val sourceFrame = computeSourceMediaFrame(frame, fps, layer.startTimeFrame, layer.timeStretch, sourceFps)
         val decoded = videoFrameProvider.getFrame(
             mediaUri = footage.mediaUri,
             frameNumber = sourceFrame,
-            fps = fps,
+            fps = sourceFps,
             targetWidth = footage.naturalWidth,
             targetHeight = footage.naturalHeight
         )

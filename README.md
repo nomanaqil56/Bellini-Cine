@@ -9,15 +9,26 @@
 
 ---
 
-## ⚡ Vision & Highlights
+## ⚡ Vision & Status Overview
 
-Traditional mobile video editors are limited to simple timeline trimming and preset filters. **Bellini Cine** brings true compositing power to touchscreens:
-- **Hierarchical Layer Graph**: Solid, Footage, Text, Vector Shape, Null, Adjustment, Camera, Light, and Nested Precomposition layers with parent-child transform cascades.
-- **Precision Keyframe & Bezier Curves**: Spatial motion paths, sub-frame temporal easing, velocity influence handles, and a dedicated mobile-friendly **Speed & Value Graph Editor**.
-- **After Effects Procedural Expressions**: Real-time evaluation of mathematical and procedural motion (`wiggle()`, `linear()`, `ease()`, `loopOut()`, `time`, `value`).
-- **Hardware-Accelerated Compositing**: Multi-pass offscreen Framebuffer (FBO) pipeline supporting 20+ After Effects blend modes (Multiply, Screen, Overlay, Color Dodge, Add, Difference, etc.), Bezier vector masks, and Alpha/Luma track mattes.
-- **Visual Effects & Shaders**: Separable Gaussian blur, Glow & bloom, chromatic aberration, LUT color grading, and displacement maps running on OpenGL ES 3.2 / Vulkan shaders.
-- **Hardware Video Acceleration**: Zero-copy surface rendering and decoding via Android MediaCodec, multi-track audio mixing, and 4K/60fps export.
+Bellini Cine aims to deliver After Effects-grade compositing and motion graphics on mobile touchscreens. To maintain complete engineering integrity, the codebase distinguishes between **implemented & unit-tested capabilities**, **partially implemented modules**, and **planned architectural milestones**.
+
+### Current Implementation Status
+
+| Subsystem | Status | Details |
+| :--- | :--- | :--- |
+| **Workspace & UI** | ✅ Implemented | Jetpack Compose multi-tab workspace (Timeline, Graph Editor, Effects Library, Project Assets, Render Queue), Property Inspector, Canvas Viewport. |
+| **Project Persistence** | ✅ Implemented & Verified | Multi-composition atomic JSON persistence with `.bak` crash recovery, schema versioning (`v0 -> v1` migrations), debounced & lifecycle-triggered autosave. |
+| **Software Compositor** | ✅ Implemented & Verified | Skia Android Canvas software pipeline with affine 2D transform cascades ($M_{world} = M_{parent} \times M_{local}$), vector masks, and straight-color track mattes. |
+| **Track Mattes** | ✅ Implemented & Verified | Offscreen Alpha, Alpha Inverted, Luma, and Luma Inverted mattes using ITU-R BT.709 coefficients and straight color preservation. |
+| **Effect Pipeline** | ✅ Implemented & Verified | Central `EffectRegistry` with 7 registered pixel effects: Fast Gaussian Blur, Glow (with Threshold isolation), Brightness/Contrast, Tint, Invert, Hue/Saturation (Euler matrix), Solid Composite. |
+| **Media Import (SAF)** | ✅ Implemented | Storage Access Framework (`content://` URI) document picker, persistable URI permissions, project media bin, footage relinking, missing media alerts. |
+| **Video Decoding** | 🟡 Partially Implemented | `MediaMetadataRetriever` extraction with bounded 64 MB LRU cache, hardware rotation handling, and time-stretch mapping (`OPTION_CLOSEST`). Exact frame-accurate NDK decoding is planned. |
+| **Video Export** | ✅ Implemented | `MediaCodec` H.264 MP4 export with color format negotiation (NV12 / I420), Image plane-aware feeding, backpressure draining, guaranteed EOS, and MP4 container verification. |
+| **Expression Engine** | 🟡 Partially Implemented | Recursive-descent expression parser supporting basic mathematical expressions, `time`, `wiggle()`, `linear()`, `ease()`, `loopOut()`. Complete JS runtime is planned. |
+| **GPU Compositor** | 🟡 Scaffolded | Experimental OpenGL ES 3.2 FBO shaders and `GlRenderer` scaffolded for solids and background compositing; primary rendering currently authoritative through software pipeline. |
+| **3D Scene Graph** | ⚪ Planned | 3D layer models, Camera, and Light data structures defined; true 3D projection, depth sorting, and GLTF mesh import scheduled for Phase 7. |
+| **Audio Engine** | ⚪ Planned | Audio layer models defined; waveform visualization, multi-track mixing, and muxed audio export scheduled for Phase 6. |
 
 ---
 
@@ -26,16 +37,17 @@ Traditional mobile video editors are limited to simple timeline trimming and pre
 ```
 com.bellinicine
 ├── core
-│   ├── model          # Composition, Layer, Transform, Keyframe, Mask, Effect, BlendMode
+│   ├── model          # Composition, Layer, Transform, Keyframe, Mask, Effect, BlendMode, Project
 │   ├── engine         # Scene graph evaluation, Bezier spline solver, Expression engine, Graph math
-│   └── render         # OpenGL ES 3.2 shaders, FBO ping-pong compositor, Matrix transforms
+│   ├── render         # CompositorPipeline (software), EffectProcessor, VideoFrameDecoder, ExportEngine, GlRenderer (experimental)
+│   └── storage        # ProjectRepository (atomic file staging, .bak recovery, schema migrations)
 └── ui
     ├── theme          # Pro dark theme (After Effects zinc, neon violet, keyframe amber)
-    ├── workspace      # Dockable multi-panel layout & ViewModel (playback clock, selection)
+    ├── workspace      # Multi-panel workspace layout & ViewModel (playback clock, selection, autosave)
     ├── viewport       # Composition canvas with pan, pinch-zoom, and 8-point transform gizmos
     ├── timeline       # Multi-track timeline, time ruler scrubbing, CTI playhead, in/out trimming
     ├── grapheditor    # Interactive touch Bezier speed and value curve editor
-    └── inspector      # Layer properties, blend mode dropdown, opacity, stopwatch keyframes
+    └── inspector      # Layer properties, blend mode dropdown, opacity, effect parameter sliders
 ```
 
 ---
@@ -57,19 +69,22 @@ cd "Bellini Cine"
 
 # Build debug APK
 ./gradlew assembleDebug
+
+# Run unit tests
+./gradlew testDebugUnitTest
 ```
 
 ---
 
-## 📋 Comprehensive Feature Map (Parts 1–80)
+## 📋 Roadmap Phases
 
-Bellini Cine is designed to implement the complete 80-part After Effects mobile specification:
-1. **Interface & Workspaces**: Dockable panels, viewport canvas, multi-track timeline, inspector, asset bins.
-2. **Composition & Time**: Custom resolutions (9:16 vertical, 16:9, square), frame rates (24, 30, 60 fps), work areas.
-3. **Layer Hierarchy**: 2D/3D affine cascades ($M_{world} = M_{parent} \times M_{local}$), anchor points, controller nulls.
-4. **Keyframing & Graph Editor**: Linear, Bezier, Hold, velocity influence, spatial trajectories.
-5. **Procedural Expressions**: JavaScript-compatible expression runtime for algorithmic motion.
-6. **Vector Shapes & Typography**: Parametric shapes, trim paths, range selectors, variable fonts.
-7. **Masks & Mattes**: Bezier masks (Add, Subtract, Intersect, Feather), Alpha and Luma track mattes.
-8. **Visual Effects & Compositing**: Multi-pass GLSL shaders, 20+ blend modes, Gaussian blurs, glow, LUT color grades.
-9. **Rendering & Export**: MediaCodec hardware encode, ProRes / MP4 / transparent WebM export.
+1. **Phase 0 (Current)**: Reliability & Correctness — Export pipeline, multi-composition atomic persistence, schema migrations, track mattes, effect parameters, SAF media bin.
+2. **Phase 1**: Media & Project Management — Audio import, media thumbnails, folder bins, portable project packaging.
+3. **Phase 2**: Animation Engine — Generic keyframing, Bezier curve tangents, Speed/Value Graph Editor.
+4. **Phase 3**: Advanced Compositing & Effects — Bezier vertex mask editing, expansion/feathering, expanded VFX library.
+5. **Phase 4**: Vector Graphics & Typography — Trim Paths, repeaters, text animators, typography layout.
+6. **Phase 5**: Footage VFX — Chroma keying, point tracking, planar tracking, rotoscoping.
+7. **Phase 6**: Audio Finishing — Waveform generation, gain/pan fades, audio-reactive motion, MP4 audio muxing.
+8. **Phase 7**: Genuine 3D — Perspective camera, lights, shadows, GLTF/GLB models, depth compositing.
+9. **Phase 8 & 9**: Mobile Optimization & Production — Adaptive preview quality, disk caching, thermal management.
+

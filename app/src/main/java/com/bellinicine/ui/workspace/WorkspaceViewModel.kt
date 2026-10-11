@@ -27,6 +27,7 @@ import com.bellinicine.core.storage.ProjectRepository
 import com.bellinicine.core.storage.ProjectSummary
 import com.bellinicine.core.model.Transform
 import com.bellinicine.core.model.Vec3
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -223,6 +224,28 @@ class WorkspaceViewModel : ViewModel() {
         )
     }
 
+    private var autosaveContext: Context? = null
+    private var autosaveJob: Job? = null
+
+    fun setAutosaveContext(context: Context) {
+        this.autosaveContext = context.applicationContext
+    }
+
+    fun scheduleAutosave(delayMs: Long = 1200L) {
+        val ctx = autosaveContext ?: return
+        autosaveJob?.cancel()
+        autosaveJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(delayMs)
+            try {
+                val currentProj = _uiState.value.project
+                val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
+                ProjectRepository.autosaveProject(ctx, projToSave)
+            } catch (e: Exception) {
+                android.util.Log.e("WorkspaceViewModel", "Debounced autosave failed: ${e.message}")
+            }
+        }
+    }
+
     private fun commitCompositionUpdate(
         updatedComp: Composition,
         selectedLayerId: String? = _uiState.value.selectedLayerId
@@ -236,6 +259,7 @@ class WorkspaceViewModel : ViewModel() {
             )
         }
         reevaluateCurrentFrame()
+        scheduleAutosave()
     }
 
     // --- UNDO / REDO HISTORY ---
@@ -419,10 +443,14 @@ class WorkspaceViewModel : ViewModel() {
     fun addEffectToSelectedLayer(name: String, category: EffectCategory) {
         val match = EffectRegistry.getAll().firstOrNull { it.displayName.equals(name, ignoreCase = true) || it.effectId == name }
         val id = match?.effectId ?: effectIdForCategory(category, name)
+        if (id == null) {
+            setStatusMessage("Unsupported or unregistered effect: $name")
+            return
+        }
         addEffectToSelectedLayer(id)
     }
 
-    private fun effectIdForCategory(category: EffectCategory, name: String): String {
+    private fun effectIdForCategory(category: EffectCategory, name: String): String? {
         return when {
             name.contains("blur", ignoreCase = true) -> EffectRegistry.ID_FAST_BLUR
             name.contains("glow", ignoreCase = true) -> EffectRegistry.ID_GLOW
@@ -430,7 +458,8 @@ class WorkspaceViewModel : ViewModel() {
             name.contains("tint", ignoreCase = true) -> EffectRegistry.ID_TINT
             name.contains("invert", ignoreCase = true) -> EffectRegistry.ID_INVERT
             name.contains("hue", ignoreCase = true) || name.contains("sat", ignoreCase = true) -> EffectRegistry.ID_HUE_SATURATION
-            else -> EffectRegistry.ID_FAST_BLUR
+            name.contains("solid", ignoreCase = true) -> EffectRegistry.ID_SOLID_COMPOSITE
+            else -> null
         }
     }
 
@@ -902,10 +931,16 @@ class WorkspaceViewModel : ViewModel() {
         return true
     }
 
-    fun triggerAutosave(context: Context) {
-        val currentProj = _uiState.value.project
-        val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
-        ProjectRepository.autosaveProject(context, projToSave)
+    fun triggerAutosave(context: Context): Boolean {
+        return try {
+            val currentProj = _uiState.value.project
+            val projToSave = updateActiveCompositionInProject(currentProj, _uiState.value.activeComposition)
+            ProjectRepository.autosaveProject(context, projToSave)
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("WorkspaceViewModel", "Autosave failed: ${e.message}")
+            false
+        }
     }
 
     // --- MULTI-COMPOSITION WORKFLOWS ---
@@ -929,6 +964,7 @@ class WorkspaceViewModel : ViewModel() {
         }
         reevaluateCurrentFrame()
         updateHistoryFlags()
+        scheduleAutosave()
     }
 
     fun addCompositionToProject(
@@ -952,6 +988,7 @@ class WorkspaceViewModel : ViewModel() {
             it.copy(compositions = it.compositions + newComp)
         }
         _uiState.update { it.copy(project = updatedProj, statusMessage = "Created composition '$name'") }
+        scheduleAutosave()
         return newComp
     }
 
@@ -973,6 +1010,7 @@ class WorkspaceViewModel : ViewModel() {
         val currentProj = _uiState.value.project
         val updatedProj = currentProj.copy(assets = currentProj.assets + asset)
         _uiState.update { it.copy(project = updatedProj, statusMessage = "Imported '${asset.name}'") }
+        scheduleAutosave()
     }
 
     fun addFootageLayerFromAsset(assetId: String) {
@@ -1020,6 +1058,7 @@ class WorkspaceViewModel : ViewModel() {
             it.copy(project = updatedProj, activeComposition = activeComp, statusMessage = "Asset relinked")
         }
         reevaluateCurrentFrame()
+        scheduleAutosave()
     }
 
     fun clearStatusMessage() {
