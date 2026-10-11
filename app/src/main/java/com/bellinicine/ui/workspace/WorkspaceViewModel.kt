@@ -560,6 +560,10 @@ class WorkspaceViewModel : ViewModel() {
         }
     }
 
+    fun setStatusMessage(msg: String?) {
+        _uiState.update { it.copy(statusMessage = msg) }
+    }
+
     private fun reevaluateCurrentFrame() {
         val eval = CompositionEvaluator.evaluateComposition(
             _uiState.value.activeComposition,

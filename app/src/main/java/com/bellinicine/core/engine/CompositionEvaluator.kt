@@ -136,9 +136,14 @@ object CompositionEvaluator {
         }
 
         if (!prop.expression.isNullOrBlank()) {
-            val x = ExpressionEvaluator.evaluateFloat(prop.expression, seconds, value.x, frame)
-            val y = ExpressionEvaluator.evaluateFloat(prop.expression, seconds, value.y, frame)
-            value = Vec3(x, y, value.z)
+            val span = if (prop.hasKeyframes() && prop.keyframes.size >= 2) {
+                val sorted = prop.keyframes.sortedBy { it.frame }
+                (sorted.last().frame - sorted.first().frame) / 30f
+            } else 0f
+            val start = if (prop.hasKeyframes() && prop.keyframes.isNotEmpty()) {
+                prop.keyframes.minOf { it.frame } / 30f
+            } else 0f
+            value = ExpressionEvaluator.evaluateVec3(prop.expression, seconds, value, frame, keyframeSpan = span, keyframeStart = start)
         }
 
         return value

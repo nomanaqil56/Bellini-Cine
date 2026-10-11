@@ -1,5 +1,6 @@
 package com.bellinicine.core.engine
 
+import com.bellinicine.core.model.Vec3
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -25,13 +26,18 @@ data class ExpressionContext(
     val index: Int = 1,
     val width: Float = 1080f,
     val height: Float = 1920f,
-    val duration: Float = 10f
+    val duration: Float = 10f,
+    val vectorValues: FloatArray? = null,
+    val keyframeSpan: Float = 0f,
+    val keyframeStart: Float = 0f,
+    val seedOffset: Int = 0
 )
 
 /**
  * Robust Expression Evaluator for After Effects motion design.
  * Supports mathematical operations, trigonometry, conditionals,
- * wiggle with smooth gradient noise, linear/ease interpolation, and loopOut.
+ * multi-dimensional vector expressions [x, y, z], array indexing value[0],
+ * organic smooth noise wiggle, linear/ease interpolation, and loopOut("cycle" / "pingpong").
  */
 object ExpressionEvaluator {
 
@@ -40,7 +46,11 @@ object ExpressionEvaluator {
         timeSeconds: Float,
         currentValue: Float,
         frameIndex: Long,
-        fps: Float = 30f
+        fps: Float = 30f,
+        vectorValues: FloatArray? = null,
+        keyframeSpan: Float = 0f,
+        keyframeStart: Float = 0f,
+        seedOffset: Int = 0
     ): Float {
         val trimmed = expression.trim()
         if (trimmed.isEmpty()) return currentValue
@@ -49,7 +59,11 @@ object ExpressionEvaluator {
             time = timeSeconds,
             value = currentValue,
             frame = frameIndex,
-            fps = fps
+            fps = fps,
+            vectorValues = vectorValues,
+            keyframeSpan = keyframeSpan,
+            keyframeStart = keyframeStart,
+            seedOffset = seedOffset
         )
 
         return try {
@@ -58,6 +72,68 @@ object ExpressionEvaluator {
         } catch (_: Exception) {
             currentValue
         }
+    }
+
+    fun evaluateVec3(
+        expression: String,
+        timeSeconds: Float,
+        currentValue: Vec3,
+        frameIndex: Long,
+        fps: Float = 30f,
+        keyframeSpan: Float = 0f,
+        keyframeStart: Float = 0f
+    ): Vec3 {
+        val trimmed = expression.trim()
+        if (trimmed.isEmpty()) return currentValue
+
+        val vecArray = floatArrayOf(currentValue.x, currentValue.y, currentValue.z)
+
+        // 1. Vector literal expression e.g. [value[0] + 50, value[1] * 2, 0]
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            val inner = trimmed.substring(1, trimmed.length - 1).trim()
+            val parts = splitTopLevel(inner, ',')
+            val x = if (parts.isNotEmpty()) evaluateFloat(parts[0], timeSeconds, currentValue.x, frameIndex, fps, vecArray, keyframeSpan, keyframeStart, 0) else currentValue.x
+            val y = if (parts.size >= 2) evaluateFloat(parts[1], timeSeconds, currentValue.y, frameIndex, fps, vecArray, keyframeSpan, keyframeStart, 1000) else currentValue.y
+            val z = if (parts.size >= 3) evaluateFloat(parts[2], timeSeconds, currentValue.z, frameIndex, fps, vecArray, keyframeSpan, keyframeStart, 2000) else currentValue.z
+            return Vec3(x, y, z)
+        }
+
+        // 2. Vector wiggle e.g. wiggle(5, 30)
+        if (trimmed.lowercase().startsWith("wiggle(")) {
+            val x = evaluateFloat(trimmed, timeSeconds, currentValue.x, frameIndex, fps, vecArray, keyframeSpan, keyframeStart, 0)
+            val y = evaluateFloat(trimmed, timeSeconds, currentValue.y, frameIndex, fps, vecArray, keyframeSpan, keyframeStart, 1000)
+            val z = evaluateFloat(trimmed, timeSeconds, currentValue.z, frameIndex, fps, vecArray, keyframeSpan, keyframeStart, 2000)
+            return Vec3(x, y, z)
+        }
+
+        // 3. Uniform scalar expression
+        val uniform = evaluateFloat(trimmed, timeSeconds, currentValue.x, frameIndex, fps, vecArray, keyframeSpan, keyframeStart)
+        return Vec3(uniform, uniform, currentValue.z)
+    }
+
+    private fun splitTopLevel(str: String, delimiter: Char): List<String> {
+        val list = mutableListOf<String>()
+        var depthParen = 0
+        var depthBracket = 0
+        var start = 0
+        for (i in str.indices) {
+            when (str[i]) {
+                '(' -> depthParen++
+                ')' -> if (depthParen > 0) depthParen--
+                '[' -> depthBracket++
+                ']' -> if (depthBracket > 0) depthBracket--
+                delimiter -> {
+                    if (depthParen == 0 && depthBracket == 0) {
+                        list.add(str.substring(start, i).trim())
+                        start = i + 1
+                    }
+                }
+            }
+        }
+        if (start < str.length) {
+            list.add(str.substring(start).trim())
+        }
+        return list
     }
 
     /**
@@ -92,9 +168,12 @@ object ExpressionEvaluator {
  */
 class ExpressionParser(private val input: String, private val ctx: ExpressionContext) {
     private var pos = 0
+    private var recursionDepth = 0
 
     fun parseExpression(): Float {
+        if (recursionDepth++ > 100) return ctx.value
         val res = parseTernary()
+        recursionDepth--
         return res
     }
 
@@ -161,28 +240,17 @@ class ExpressionParser(private val input: String, private val ctx: ExpressionCon
     }
 
     private fun parseMulDiv(): Float {
-        var left = parsePower()
+        var left = parseUnary()
         while (true) {
             skipWhitespace()
-            if (match('*')) left *= parsePower()
+            if (match('*')) left *= parseUnary()
             else if (match('/')) {
-                val r = parsePower()
-                left = if (r != 0f) left / r else 0f
-            }
-            else if (match('%')) {
-                val r = parsePower()
-                left = if (r != 0f) left % r else 0f
-            }
-            else break
-        }
-        return left
-    }
-
-    private fun parsePower(): Float {
-        var left = parseUnary()
-        skipWhitespace()
-        if (match('^')) {
-            left = left.pow(parsePower())
+                val right = parseUnary()
+                left = if (right != 0f) left / right else 0f
+            } else if (match('%')) {
+                val right = parseUnary()
+                left = if (right != 0f) left % right else 0f
+            } else break
         }
         return left
     }
@@ -197,21 +265,17 @@ class ExpressionParser(private val input: String, private val ctx: ExpressionCon
 
     private fun parsePrimary(): Float {
         skipWhitespace()
-
-        // Parentheses
         if (match('(')) {
-            val v = parseExpression()
+            val expr = parseExpression()
             skipWhitespace()
             match(')')
-            return v
+            return expr
         }
 
-        // Numbers
         if (peek().isDigit() || peek() == '.') {
             return parseNumber()
         }
 
-        // Identifiers / Function calls / Properties
         if (peek().isLetter() || peek() == '_' || peek() == '$') {
             return parseIdentifierOrCall()
         }
@@ -238,25 +302,44 @@ class ExpressionParser(private val input: String, private val ctx: ExpressionCon
         // Function call: name(arg1, arg2, ...)
         if (match('(')) {
             val args = mutableListOf<Float>()
+            var strArg = ""
             skipWhitespace()
             if (!match(')')) {
                 while (true) {
-                    args.add(parseExpression())
+                    skipWhitespace()
+                    if (peek() == '"' || peek() == '\'') {
+                        val quote = peek()
+                        pos++
+                        val sStart = pos
+                        while (pos < input.length && peek() != quote) pos++
+                        strArg = input.substring(sStart, pos)
+                        if (pos < input.length) pos++ // skip quote
+                        args.add(0f)
+                    } else {
+                        args.add(parseExpression())
+                    }
                     skipWhitespace()
                     if (match(',')) continue
                     if (match(')')) break
                     break
                 }
             }
-            return executeFunction(name, args)
+            return executeFunction(name, args, strArg)
         }
 
-        // Variables
+        // Variables and array indexing
         return resolveVariable(name)
     }
 
     private fun resolveVariable(name: String): Float {
         val lower = name.lowercase().replace(" ", "")
+
+        // Vector indexing e.g. value[0], value[1], value[2]
+        if (lower.startsWith("value[") && lower.endsWith("]")) {
+            val idx = lower.removePrefix("value[").removeSuffix("]").toIntOrNull() ?: 0
+            return ctx.vectorValues?.getOrNull(idx) ?: ctx.value
+        }
+
         return when (lower) {
             "time" -> ctx.time
             "value" -> ctx.value
@@ -272,14 +355,16 @@ class ExpressionParser(private val input: String, private val ctx: ExpressionCon
         }
     }
 
-    private fun executeFunction(name: String, args: List<Float>): Float {
+    private fun executeFunction(name: String, args: List<Float>, strArg: String): Float {
         val fn = name.lowercase().removePrefix("math.")
         return when (fn) {
             // After Effects Wiggle: wiggle(freq, amp)
             "wiggle" -> {
                 val freq = args.getOrElse(0) { 1f }
                 val amp = args.getOrElse(1) { 50f }
-                val noise = ExpressionEvaluator.smoothNoise(ctx.time * freq)
+                val seed = 1337 + ctx.seedOffset
+                val timeOffset = ctx.seedOffset * 19.73f
+                val noise = ExpressionEvaluator.smoothNoise((ctx.time + timeOffset) * freq, seed)
                 ctx.value + noise * amp
             }
 
@@ -324,9 +409,28 @@ class ExpressionParser(private val input: String, private val ctx: ExpressionCon
 
             // loopOut("cycle") / loopOut("pingpong")
             "loopout" -> {
-                val loopDuration = max(1f, ctx.duration)
-                val cycleTime = ctx.time % loopDuration
-                ctx.value * (cycleTime / loopDuration)
+                val mode = if (strArg.isNotBlank()) strArg.lowercase() else "cycle"
+                val loopDuration = if (ctx.keyframeSpan > 0f) ctx.keyframeSpan else max(1f, ctx.duration)
+                val startTime = ctx.keyframeStart
+                val delta = ctx.time - (startTime + loopDuration)
+
+                if (delta <= 0f) {
+                    ctx.value
+                } else {
+                    when (mode) {
+                        "pingpong" -> {
+                            val cycles = (delta / loopDuration).toInt()
+                            val rem = delta % loopDuration
+                            val factor = if (cycles % 2 == 0) (1f - (rem / loopDuration)) else (rem / loopDuration)
+                            ctx.value * factor
+                        }
+                        else -> { // cycle
+                            val rem = delta % loopDuration
+                            val factor = rem / loopDuration
+                            ctx.value * factor
+                        }
+                    }
+                }
             }
 
             // Math built-ins

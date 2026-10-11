@@ -360,13 +360,26 @@ fun WorkspaceScreen(
             onStartExport = { config ->
                 viewModel.setExportProgress(0f, true)
                 coroutineScope.launch {
-                    val path = ExportEngine.exportComposition(
+                    val result = ExportEngine.exportComposition(
                         context = context,
                         composition = state.activeComposition,
                         config = config,
                         onProgress = { p -> viewModel.setExportProgress(p, true) }
                     )
-                    viewModel.setExportProgress(1f, false, path)
+                    when (result) {
+                        is com.bellinicine.core.render.ExportResult.Success -> {
+                            viewModel.setExportProgress(1f, false, result.filePath)
+                            viewModel.setStatusMessage("Export succeeded: ${java.io.File(result.filePath).name} (${result.format})")
+                        }
+                        is com.bellinicine.core.render.ExportResult.Failure -> {
+                            viewModel.setExportProgress(0f, false, null)
+                            viewModel.setStatusMessage("Export failed: ${result.errorMessage}")
+                        }
+                        is com.bellinicine.core.render.ExportResult.Cancelled -> {
+                            viewModel.setExportProgress(0f, false, null)
+                            viewModel.setStatusMessage("Export was cancelled.")
+                        }
+                    }
                 }
             }
         )

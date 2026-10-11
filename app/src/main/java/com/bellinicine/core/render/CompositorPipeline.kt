@@ -15,13 +15,10 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Build
-import android.util.LruCache
 import com.bellinicine.core.engine.CompositionEvaluator
 import com.bellinicine.core.engine.EvaluatedLayer
 import com.bellinicine.core.model.BlendMode
 import com.bellinicine.core.model.Composition
-import com.bellinicine.core.model.EffectCategory
-import com.bellinicine.core.model.EffectParameter
 import com.bellinicine.core.model.LayerData
 import com.bellinicine.core.model.MaskMode
 import com.bellinicine.core.model.TrackMatteType
@@ -36,19 +33,15 @@ import kotlin.math.sin
  * Unified Software & Hardware Compositing Pipeline for Bellini Cine.
  * Features:
  * - Cascading parent-child world matrix transformations
- * - Real layer effects processing (Gaussian Blur, Glow, Color Curves, Invert)
- * - Alpha & Luma Track Mattes
- * - Real footage bitmap decoding and caching
+ * - Isolated offscreen Track Mattes (Alpha, Alpha Inverted, Luma BT.709, Luma Inverted)
+ * - Deterministic Effect Engine with typed schemas & keyframe evaluation
+ * - Hardware video frame decoding and LRU frame cache
  * - Vector geometries (Rectangles, Ellipses, Stars, Polygons)
  * - 20+ After Effects blend modes
  */
 object CompositorPipeline {
 
-    // Memory cache for decoded footage bitmaps (up to 32MB)
-    private val footageCache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-    }
-
+    var videoFrameProvider: VideoFrameProvider = VideoFrameDecoder
     var compositionProvider: ((String) -> Composition?)? = null
 
     /**
@@ -73,7 +66,7 @@ object CompositorPipeline {
 
         canvas.save()
         canvas.scale(scaleX, scaleY)
-        renderEvaluatedLayers(canvas, evaluatedLayers)
+        renderEvaluatedLayers(canvas, evaluatedLayers, frame, composition.frameRate)
         canvas.restore()
 
         return bitmap
@@ -81,143 +74,178 @@ object CompositorPipeline {
 
     /**
      * Renders evaluated layers onto an Android Canvas with world matrices,
-     * masks, track mattes, and real pixel effects.
+     * masks, isolated track mattes, and real pixel effects.
      */
-    fun renderEvaluatedLayers(canvas: Canvas, evaluatedLayers: List<EvaluatedLayer>) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    fun renderEvaluatedLayers(
+        canvas: Canvas,
+        evaluatedLayers: List<EvaluatedLayer>,
+        frame: Long = 0L,
+        fps: Float = 30f
+    ) {
+        val consumedAsMatte = BooleanArray(evaluatedLayers.size)
+        for (i in evaluatedLayers.indices) {
+            val layer = evaluatedLayers[i].layer
+            if (layer.trackMatteType != TrackMatteType.NONE && i > 0) {
+                consumedAsMatte[i - 1] = true
+            }
+        }
+
+        val clip = canvas.clipBounds
+        val bufferW = if (clip != null && clip.width() > 0) clip.width() else 1920
+        val bufferH = if (clip != null && clip.height() > 0) clip.height() else 1080
 
         for (i in evaluatedLayers.indices) {
+            if (consumedAsMatte[i]) continue
+
             val eval = evaluatedLayers[i]
             val layer = eval.layer
-            val transform = eval.transform
-            val alpha = (transform.opacity / 100f).coerceIn(0f, 1f)
+            val alpha = (eval.transform.opacity / 100f).coerceIn(0f, 1f)
             if (alpha <= 0.001f) continue
 
-            // 1. Convert 4x4 OpenGL column-major world matrix into Android 2D Affine Matrix
-            // This ensures parent-child cascading transforms evaluate 100% accurately!
-            val m = eval.worldMatrix
-            val androidMatrix = Matrix()
-            androidMatrix.setValues(floatArrayOf(
-                m[0], m[4], m[12],
-                m[1], m[5], m[13],
-                0f,   0f,   1f
-            ))
-
-            canvas.save()
-            canvas.concat(androidMatrix)
-
-            // 2. Setup Layer Paint & Blend Mode
-            paint.reset()
-            paint.isAntiAlias = true
-            paint.isFilterBitmap = true
-            paint.alpha = (alpha * 255).toInt()
-            applyBlendMode(paint, layer.blendMode)
-
-            // 3. Apply Full Vector Masks (Curved Bezier Paths, Inversion, Feathering, Opacity)
-            if (layer.masks.isNotEmpty()) {
-                val clipPath = Path()
-                var hasActiveMasks = false
-
-                for (mask in layer.masks) {
-                    if (mask.vertices.isNotEmpty()) {
-                        hasActiveMasks = true
-                        val maskPath = Path()
-                        val first = mask.vertices.first().point
-                        maskPath.moveTo(first.x, first.y)
-
-                        for (j in 1 until mask.vertices.size) {
-                            val prev = mask.vertices[j - 1]
-                            val curr = mask.vertices[j]
-                            val cp1x = prev.point.x + prev.outTangent.x
-                            val cp1y = prev.point.y + prev.outTangent.y
-                            val cp2x = curr.point.x + curr.inTangent.x
-                            val cp2y = curr.point.y + curr.inTangent.y
-
-                            if (prev.outTangent.x != 0f || prev.outTangent.y != 0f || curr.inTangent.x != 0f || curr.inTangent.y != 0f) {
-                                maskPath.cubicTo(cp1x, cp1y, cp2x, cp2y, curr.point.x, curr.point.y)
-                            } else {
-                                maskPath.lineTo(curr.point.x, curr.point.y)
-                            }
-                        }
-
-                        if (mask.isClosed) {
-                            val last = mask.vertices.last()
-                            val firstVert = mask.vertices.first()
-                            val cp1x = last.point.x + last.outTangent.x
-                            val cp1y = last.point.y + last.outTangent.y
-                            val cp2x = firstVert.point.x + firstVert.inTangent.x
-                            val cp2y = firstVert.point.y + firstVert.inTangent.y
-
-                            if (last.outTangent.x != 0f || last.outTangent.y != 0f || firstVert.inTangent.x != 0f || firstVert.inTangent.y != 0f) {
-                                maskPath.cubicTo(cp1x, cp1y, cp2x, cp2y, firstVert.point.x, firstVert.point.y)
-                            }
-                            maskPath.close()
-                        }
-
-                        // Apply Mask Expansion if set
-                        val exp = mask.expansion.defaultValue
-                        val processedPath = if (exp != 0f) {
-                            val expMatrix = Matrix().apply {
-                                val bounds = RectF()
-                                maskPath.computeBounds(bounds, true)
-                                val sx = if (bounds.width() > 0) (bounds.width() + exp * 2f) / bounds.width() else 1f
-                                val sy = if (bounds.height() > 0) (bounds.height() + exp * 2f) / bounds.height() else 1f
-                                setScale(sx, sy, bounds.centerX(), bounds.centerY())
-                            }
-                            val expanded = Path()
-                            maskPath.transform(expMatrix, expanded)
-                            expanded
-                        } else maskPath
-
-                        // Apply Mask Inversion
-                        val finalPath = if (mask.inverted) {
-                            val inv = Path()
-                            inv.addRect(RectF(-8000f, -8000f, 18000f, 18000f), Path.Direction.CW)
-                            inv.op(processedPath, Path.Op.DIFFERENCE)
-                            inv
-                        } else processedPath
-
-                        when (mask.mode) {
-                            MaskMode.ADD -> clipPath.op(finalPath, Path.Op.UNION)
-                            MaskMode.SUBTRACT -> clipPath.op(finalPath, Path.Op.DIFFERENCE)
-                            MaskMode.INTERSECT -> clipPath.op(finalPath, Path.Op.INTERSECT)
-                            else -> clipPath.addPath(finalPath)
-                        }
-
-                        // Apply Mask Feathering filter if configured
-                        val featherVal = mask.feather.defaultValue
-                        if (featherVal > 0.5f) {
-                            paint.maskFilter = BlurMaskFilter(featherVal.coerceIn(1f, 100f), BlurMaskFilter.Blur.NORMAL)
-                        }
-
-                        // Scale layer alpha by mask opacity
-                        paint.alpha = (paint.alpha * (mask.opacity.defaultValue / 100f).coerceIn(0f, 1f)).toInt()
-                    }
-                }
-                if (hasActiveMasks) {
-                    canvas.clipPath(clipPath)
-                }
-            }
-
-            // 4. Render Layer Content (with Effects if present)
-            val hasActiveEffects = layer.effects.any { it.enabled }
-            if (hasActiveEffects) {
-                renderLayerWithEffects(canvas, layer, paint, alpha)
-            } else {
-                renderLayerDirect(canvas, layer, paint, alpha)
-            }
-
-            // 5. Track Matte Post-Processing (Alpha / Luma mattes)
             if (layer.trackMatteType != TrackMatteType.NONE && i > 0) {
                 val matteEval = evaluatedLayers[i - 1]
-                applyTrackMatte(canvas, matteEval, layer.trackMatteType)
+                renderWithTrackMatte(canvas, eval, matteEval, layer.trackMatteType, bufferW, bufferH, frame, fps)
+            } else {
+                renderSingleEvaluatedLayer(canvas, eval, frame, fps)
             }
-
-            canvas.restore()
         }
     }
 
-    private fun renderLayerDirect(canvas: Canvas, layer: com.bellinicine.core.model.Layer, paint: Paint, alpha: Float) {
+    /**
+     * Renders a single evaluated layer with its world transform matrix, vector masks, and effects.
+     */
+    fun renderSingleEvaluatedLayer(
+        canvas: Canvas,
+        eval: EvaluatedLayer,
+        frame: Long = 0L,
+        fps: Float = 30f
+    ) {
+        val layer = eval.layer
+        val alpha = (eval.transform.opacity / 100f).coerceIn(0f, 1f)
+        if (alpha <= 0.001f) return
+
+        // 1. Convert 4x4 OpenGL column-major world matrix into Android 2D Affine Matrix
+        val m = eval.worldMatrix
+        val androidMatrix = Matrix()
+        androidMatrix.setValues(floatArrayOf(
+            m[0], m[4], m[12],
+            m[1], m[5], m[13],
+            0f,   0f,   1f
+        ))
+
+        canvas.save()
+        canvas.concat(androidMatrix)
+
+        // 2. Setup Layer Paint & Blend Mode
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        paint.alpha = (alpha * 255).toInt()
+        applyBlendMode(paint, layer.blendMode)
+
+        // 3. Apply Full Vector Masks (Curved Bezier Paths, Inversion, Feathering, Opacity)
+        if (layer.masks.isNotEmpty()) {
+            val clipPath = Path()
+            var hasActiveMasks = false
+
+            for (mask in layer.masks) {
+                if (mask.vertices.isNotEmpty()) {
+                    hasActiveMasks = true
+                    val maskPath = Path()
+                    val first = mask.vertices.first().point
+                    maskPath.moveTo(first.x, first.y)
+
+                    for (j in 1 until mask.vertices.size) {
+                        val prev = mask.vertices[j - 1]
+                        val curr = mask.vertices[j]
+                        val cp1x = prev.point.x + prev.outTangent.x
+                        val cp1y = prev.point.y + prev.outTangent.y
+                        val cp2x = curr.point.x + curr.inTangent.x
+                        val cp2y = curr.point.y + curr.inTangent.y
+
+                        if (prev.outTangent.x != 0f || prev.outTangent.y != 0f || curr.inTangent.x != 0f || curr.inTangent.y != 0f) {
+                            maskPath.cubicTo(cp1x, cp1y, cp2x, cp2y, curr.point.x, curr.point.y)
+                        } else {
+                            maskPath.lineTo(curr.point.x, curr.point.y)
+                        }
+                    }
+
+                    if (mask.isClosed) {
+                        val last = mask.vertices.last()
+                        val firstVert = mask.vertices.first()
+                        val cp1x = last.point.x + last.outTangent.x
+                        val cp1y = last.point.y + last.outTangent.y
+                        val cp2x = firstVert.point.x + firstVert.inTangent.x
+                        val cp2y = firstVert.point.y + firstVert.inTangent.y
+
+                        if (last.outTangent.x != 0f || last.outTangent.y != 0f || firstVert.inTangent.x != 0f || firstVert.inTangent.y != 0f) {
+                            maskPath.cubicTo(cp1x, cp1y, cp2x, cp2y, firstVert.point.x, firstVert.point.y)
+                        }
+                        maskPath.close()
+                    }
+
+                    // Apply Mask Expansion if set
+                    val exp = mask.expansion.defaultValue
+                    val processedPath = if (exp != 0f) {
+                        val expMatrix = Matrix().apply {
+                            val bounds = RectF()
+                            maskPath.computeBounds(bounds, true)
+                            val sx = if (bounds.width() > 0) (bounds.width() + exp * 2f) / bounds.width() else 1f
+                            val sy = if (bounds.height() > 0) (bounds.height() + exp * 2f) / bounds.height() else 1f
+                            setScale(sx, sy, bounds.centerX(), bounds.centerY())
+                        }
+                        val expanded = Path()
+                        maskPath.transform(expMatrix, expanded)
+                        expanded
+                    } else maskPath
+
+                    // Apply Mask Inversion
+                    val finalPath = if (mask.inverted) {
+                        val inv = Path()
+                        inv.addRect(RectF(-8000f, -8000f, 18000f, 18000f), Path.Direction.CW)
+                        inv.op(processedPath, Path.Op.DIFFERENCE)
+                        inv
+                    } else processedPath
+
+                    when (mask.mode) {
+                        MaskMode.ADD -> clipPath.op(finalPath, Path.Op.UNION)
+                        MaskMode.SUBTRACT -> clipPath.op(finalPath, Path.Op.DIFFERENCE)
+                        MaskMode.INTERSECT -> clipPath.op(finalPath, Path.Op.INTERSECT)
+                        else -> clipPath.addPath(finalPath)
+                    }
+
+                    // Apply Mask Feathering filter if configured
+                    val featherVal = mask.feather.defaultValue
+                    if (featherVal > 0.5f) {
+                        paint.maskFilter = BlurMaskFilter(featherVal.coerceIn(1f, 100f), BlurMaskFilter.Blur.NORMAL)
+                    }
+
+                    // Scale layer alpha by mask opacity
+                    paint.alpha = (paint.alpha * (mask.opacity.defaultValue / 100f).coerceIn(0f, 1f)).toInt()
+                }
+            }
+            if (hasActiveMasks) {
+                canvas.clipPath(clipPath)
+            }
+        }
+
+        // 4. Render Layer Content (with Effects if present)
+        val hasActiveEffects = layer.effects.any { it.enabled }
+        if (hasActiveEffects) {
+            renderLayerWithEffects(canvas, layer, paint, alpha, frame, fps)
+        } else {
+            renderLayerDirect(canvas, layer, paint, alpha, frame, fps)
+        }
+
+        canvas.restore()
+    }
+
+    private fun renderLayerDirect(
+        canvas: Canvas,
+        layer: com.bellinicine.core.model.Layer,
+        paint: Paint,
+        alpha: Float,
+        frame: Long,
+        fps: Float
+    ) {
         when (val data = layer.data) {
             is LayerData.Solid -> {
                 paint.color = data.color.toInt()
@@ -242,14 +270,14 @@ object CompositorPipeline {
             }
 
             is LayerData.Footage -> {
-                renderFootage(canvas, data, paint, alpha)
+                renderFootage(canvas, data, paint, alpha, frame, fps)
             }
 
             is LayerData.Precomp -> {
                 val nestedComp = compositionProvider?.invoke(data.compositionId)
                 if (nestedComp != null) {
-                    val nestedEvaluated = CompositionEvaluator.evaluateComposition(nestedComp, 0L)
-                    renderEvaluatedLayers(canvas, nestedEvaluated)
+                    val nestedEvaluated = CompositionEvaluator.evaluateComposition(nestedComp, frame)
+                    renderEvaluatedLayers(canvas, nestedEvaluated, frame, nestedComp.frameRate)
                 } else {
                     paint.style = Paint.Style.STROKE
                     paint.strokeWidth = 2f
@@ -279,7 +307,9 @@ object CompositorPipeline {
         canvas: Canvas,
         layer: com.bellinicine.core.model.Layer,
         paint: Paint,
-        alpha: Float
+        alpha: Float,
+        frame: Long,
+        fps: Float
     ) {
         val (w, h) = when (val d = layer.data) {
             is LayerData.Solid -> Pair(d.width, d.height)
@@ -291,107 +321,83 @@ object CompositorPipeline {
         val safeW = max(1, w)
         val safeH = max(1, h)
 
-        var layerBmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
+        val layerBmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
         val offscreenCanvas = Canvas(layerBmp)
         val directPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             this.alpha = 255
         }
 
-        renderLayerDirect(offscreenCanvas, layer, directPaint, 1f)
+        renderLayerDirect(offscreenCanvas, layer, directPaint, 1f, frame, fps)
 
-        // Process applied effects in chain
-        for (effect in layer.effects) {
-            if (!effect.enabled) continue
-
-            when (effect.category) {
-                EffectCategory.BLUR_AND_SHARPEN -> {
-                    val radius = (effect.parameters.firstOrNull() as? EffectParameter.Slider)?.property?.defaultValue ?: 15f
-                    layerBmp = fastBlur(layerBmp, radius.toInt().coerceIn(1, 60))
-                }
-
-                EffectCategory.STYLIZE -> {
-                    // Glow & Bloom: 2-pass blur addition
-                    val glow = fastBlur(layerBmp, 20)
-                    val glowCanvas = Canvas(layerBmp)
-                    val glowPaint = Paint().apply {
-                        xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-                        this.alpha = 180
-                    }
-                    glowCanvas.drawBitmap(glow, 0f, 0f, glowPaint)
-                    glow.recycle()
-                }
-
-                EffectCategory.COLOR_CORRECTION -> {
-                    val cm = ColorMatrix().apply {
-                        // Increase contrast & cinematic tint
-                        setScale(1.2f, 1.1f, 1.3f, 1f)
-                    }
-                    val ccPaint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
-                    val graded = Bitmap.createBitmap(layerBmp.width, layerBmp.height, Bitmap.Config.ARGB_8888)
-                    Canvas(graded).drawBitmap(layerBmp, 0f, 0f, ccPaint)
-                    layerBmp.recycle()
-                    layerBmp = graded
-                }
-
-                else -> {}
-            }
-        }
+        // Process applied effects in chain using EffectProcessor
+        val processedBmp = EffectProcessor.applyEffects(layerBmp, layer.effects, frame, fps)
 
         paint.alpha = (alpha * 255).toInt()
-        canvas.drawBitmap(layerBmp, 0f, 0f, paint)
+        canvas.drawBitmap(processedBmp, 0f, 0f, paint)
+
+        if (processedBmp !== layerBmp) {
+            processedBmp.recycle()
+        }
         layerBmp.recycle()
     }
 
-    private fun renderFootage(canvas: Canvas, footage: LayerData.Footage, paint: Paint, alpha: Float) {
-        val cached = footageCache.get(footage.mediaUri)
-        if (cached != null) {
-            canvas.drawBitmap(cached, 0f, 0f, paint)
-            return
+    private fun renderFootage(
+        canvas: Canvas,
+        footage: LayerData.Footage,
+        paint: Paint,
+        alpha: Float,
+        frame: Long,
+        fps: Float
+    ) {
+        val decoded = videoFrameProvider.getFrame(
+            mediaUri = footage.mediaUri,
+            frameNumber = frame,
+            fps = fps,
+            targetWidth = footage.naturalWidth,
+            targetHeight = footage.naturalHeight
+        )
+
+        if (decoded != null) {
+            val srcRect = android.graphics.Rect(0, 0, decoded.width, decoded.height)
+            val dstRect = RectF(0f, 0f, footage.naturalWidth.toFloat(), footage.naturalHeight.toFloat())
+            canvas.drawBitmap(decoded, srcRect, dstRect, paint)
+        } else {
+            // Informative offline media visual indicator
+            val w = max(200f, footage.naturalWidth.toFloat())
+            val h = max(100f, footage.naturalHeight.toFloat())
+
+            paint.style = Paint.Style.FILL
+            paint.color = 0xFF1E1E26.toInt()
+            canvas.drawRect(0f, 0f, w, h, paint)
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 3f
+            paint.color = 0xFFFF5252.toInt()
+            canvas.drawRect(0f, 0f, w, h, paint)
+
+            paint.style = Paint.Style.FILL
+            paint.textSize = 24f
+            paint.typeface = Typeface.DEFAULT_BOLD
+            paint.color = Color.WHITE
+            val fileName = File(footage.mediaUri).name
+            canvas.drawText("Media Offline: $fileName", 20f, h / 2f, paint)
         }
-
-        val file = File(footage.mediaUri)
-        if (file.exists() && file.isFile) {
-            try {
-                val decoded = BitmapFactory.decodeFile(file.absolutePath)
-                if (decoded != null) {
-                    footageCache.put(footage.mediaUri, decoded)
-                    canvas.drawBitmap(decoded, 0f, 0f, paint)
-                    return
-                }
-            } catch (_: Exception) {}
-        }
-
-        // Clean footage thumbnail fallback
-        val w = footage.naturalWidth.coerceAtLeast(400).toFloat()
-        val h = footage.naturalHeight.coerceAtLeast(300).toFloat()
-
-        paint.style = Paint.Style.FILL
-        paint.color = 0xFF20202C.toInt()
-        paint.alpha = (alpha * 255).toInt()
-        canvas.drawRect(0f, 0f, w, h, paint)
-
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 3f
-        paint.color = 0xFF7C4DFF.toInt()
-        canvas.drawRect(0f, 0f, w, h, paint)
-
-        paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
-        paint.textSize = 24f
-        paint.typeface = Typeface.DEFAULT_BOLD
-        canvas.drawText("Footage: ${footage.assetId}", 24f, h / 2f, paint)
     }
 
-    private fun renderVectorShape(canvas: Canvas, shape: LayerData.Shape, paint: Paint, alpha: Float) {
+    private fun renderVectorShape(
+        canvas: Canvas,
+        shape: LayerData.Shape,
+        paint: Paint,
+        alpha: Float
+    ) {
         val path = Path()
         val w = shape.width
         val h = shape.height
 
         when (shape.shapeType.lowercase()) {
-            "rectangle", "rect" -> {
+            "rectangle" -> {
                 if (shape.cornerRadius > 0f) {
-                    val r = shape.cornerRadius
-                    path.addRoundRect(RectF(0f, 0f, w, h), r, r, Path.Direction.CW)
+                    path.addRoundRect(RectF(0f, 0f, w, h), shape.cornerRadius, shape.cornerRadius, Path.Direction.CW)
                 } else {
                     path.addRect(0f, 0f, w, h, Path.Direction.CW)
                 }
@@ -453,21 +459,135 @@ object CompositorPipeline {
         }
     }
 
-    private fun applyTrackMatte(canvas: Canvas, matteEval: EvaluatedLayer, type: TrackMatteType) {
-        val mattePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    // --- ISOLATED OFFSCREEN TRACK MATTE PIPELINE ---
+
+    private fun renderWithTrackMatte(
+        canvas: Canvas,
+        targetEval: EvaluatedLayer,
+        matteEval: EvaluatedLayer,
+        type: TrackMatteType,
+        bufferW: Int,
+        bufferH: Int,
+        frame: Long,
+        fps: Float
+    ) {
+        val safeW = max(1, bufferW)
+        val safeH = max(1, bufferH)
+
+        val targetBmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
+        val targetCanvas = Canvas(targetBmp)
+        renderSingleEvaluatedLayer(targetCanvas, targetEval, frame, fps)
+
+        val matteBmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
+        val matteCanvas = Canvas(matteBmp)
+        renderSingleEvaluatedLayer(matteCanvas, matteEval, frame, fps)
+
         when (type) {
-            TrackMatteType.ALPHA -> {
-                mattePaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-            }
-            TrackMatteType.ALPHA_INVERTED -> {
-                mattePaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
-            }
-            TrackMatteType.LUMA, TrackMatteType.LUMA_INVERTED -> {
-                mattePaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-            }
-            TrackMatteType.NONE -> return
+            TrackMatteType.ALPHA -> applyAlphaMatte(targetBmp, matteBmp, inverted = false)
+            TrackMatteType.ALPHA_INVERTED -> applyAlphaMatte(targetBmp, matteBmp, inverted = true)
+            TrackMatteType.LUMA -> applyLumaMatte(targetBmp, matteBmp, inverted = false)
+            TrackMatteType.LUMA_INVERTED -> applyLumaMatte(targetBmp, matteBmp, inverted = true)
+            TrackMatteType.NONE -> {}
         }
-        renderLayerDirect(canvas, matteEval.layer, mattePaint, 1f)
+
+        val compPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        applyBlendMode(compPaint, targetEval.layer.blendMode)
+        canvas.drawBitmap(targetBmp, 0f, 0f, compPaint)
+
+        targetBmp.recycle()
+        matteBmp.recycle()
+    }
+
+    fun applyAlphaMattePixels(
+        targetPixels: IntArray,
+        mattePixels: IntArray,
+        length: Int,
+        inverted: Boolean
+    ) {
+        for (i in 0 until length) {
+            val tPix = targetPixels[i]
+            val tA = (tPix ushr 24) and 0xff
+            if (tA == 0) continue
+
+            val mPix = mattePixels[i]
+            val mA = (mPix ushr 24) and 0xff
+            val factor = if (inverted) (255 - mA) / 255f else mA / 255f
+
+            val newA = (tA * factor).toInt().coerceIn(0, 255)
+            val tR = (tPix ushr 16) and 0xff
+            val tG = (tPix ushr 8) and 0xff
+            val tB = tPix and 0xff
+
+            val newR = (tR * factor).toInt().coerceIn(0, 255)
+            val newG = (tG * factor).toInt().coerceIn(0, 255)
+            val newB = (tB * factor).toInt().coerceIn(0, 255)
+
+            targetPixels[i] = (newA shl 24) or (newR shl 16) or (newG shl 8) or newB
+        }
+    }
+
+    fun applyLumaMattePixels(
+        targetPixels: IntArray,
+        mattePixels: IntArray,
+        length: Int,
+        inverted: Boolean
+    ) {
+        for (i in 0 until length) {
+            val tPix = targetPixels[i]
+            val tA = (tPix ushr 24) and 0xff
+            if (tA == 0) continue
+
+            val mPix = mattePixels[i]
+            val mA = (mPix ushr 24) and 0xff
+            val mR = (mPix ushr 16) and 0xff
+            val mG = (mPix ushr 8) and 0xff
+            val mB = mPix and 0xff
+
+            // ITU-R BT.709 coefficients
+            val luma = (0.2126f * mR + 0.7152f * mG + 0.0722f * mB) / 255f
+            val matteAlphaFactor = (mA / 255f) * luma
+
+            val factor = if (inverted) {
+                (1f - matteAlphaFactor).coerceIn(0f, 1f)
+            } else {
+                matteAlphaFactor.coerceIn(0f, 1f)
+            }
+
+            val newA = (tA * factor).toInt().coerceIn(0, 255)
+            val tR = (tPix ushr 16) and 0xff
+            val tG = (tPix ushr 8) and 0xff
+            val tB = tPix and 0xff
+
+            val newR = (tR * factor).toInt().coerceIn(0, 255)
+            val newG = (tG * factor).toInt().coerceIn(0, 255)
+            val newB = (tB * factor).toInt().coerceIn(0, 255)
+
+            targetPixels[i] = (newA shl 24) or (newR shl 16) or (newG shl 8) or newB
+        }
+    }
+
+    fun applyAlphaMatte(targetBitmap: Bitmap, matteBitmap: Bitmap, inverted: Boolean) {
+        val w = min(targetBitmap.width, matteBitmap.width)
+        val h = min(targetBitmap.height, matteBitmap.height)
+        val len = w * h
+        val targetPixels = IntArray(len)
+        val mattePixels = IntArray(len)
+        targetBitmap.getPixels(targetPixels, 0, w, 0, 0, w, h)
+        matteBitmap.getPixels(mattePixels, 0, w, 0, 0, w, h)
+        applyAlphaMattePixels(targetPixels, mattePixels, len, inverted)
+        targetBitmap.setPixels(targetPixels, 0, w, 0, 0, w, h)
+    }
+
+    fun applyLumaMatte(targetBitmap: Bitmap, matteBitmap: Bitmap, inverted: Boolean) {
+        val w = min(targetBitmap.width, matteBitmap.width)
+        val h = min(targetBitmap.height, matteBitmap.height)
+        val len = w * h
+        val targetPixels = IntArray(len)
+        val mattePixels = IntArray(len)
+        targetBitmap.getPixels(targetPixels, 0, w, 0, 0, w, h)
+        matteBitmap.getPixels(mattePixels, 0, w, 0, 0, w, h)
+        applyLumaMattePixels(targetPixels, mattePixels, len, inverted)
+        targetBitmap.setPixels(targetPixels, 0, w, 0, 0, w, h)
     }
 
     private fun applyBlendMode(paint: Paint, blendMode: BlendMode) {
@@ -532,9 +652,6 @@ object CompositorPipeline {
         var gsum: Int
         var bsum: Int
         var asum: Int
-        var x: Int
-        var y: Int
-        var i: Int
         var p: Int
         var yp: Int
         var yi: Int
